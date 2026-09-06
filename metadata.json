@@ -1,0 +1,5 @@
+{
+  "name": "BySorellaStore Indumentaria",
+  "description": "Tienda exclusiva de ropa y perfumes con asistente de IA y gestión inteligente de inventario.",
+  "requestFramePermissions": ["camera"]
+}

@@ -1,0 +1,156 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields: uid, displayName, email, photoURL, phone, city, address, role, createdAt, lastLogin
+    //
+    // Collection: products
+    // Fields: name, description, price, category, stock, sizes, colors, fragrances, image_url, gallery, created_at
+    //
+    // Collection: categories
+    // Fields: name, image_url, description, gallery, is_protected
+    //
+    // Collection: banners
+    // Fields: title, subtitle, button_text, button_link, image_url, is_fixed, order_index
+    //
+    // Collection: settings
+    // Fields: whatsapp_number, admin_password, featured_category, featured_layout, mercadopago_public_key, mercadopago_access_token, ...
+    //
+    // Collection: orders
+    // Fields: order_number, customer_email, customer_name, customer_phone, shipping_address, shipping_method, total, items, status, createdAt
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        ((exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.approved == true) ||
+         (request.auth.token.email.lower() == "dgmvolpi@gmail.com"));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidCoupon(data) {
+      return hasOnlyAllowedFields(['code', 'discount_percentage', 'valid_from', 'valid_until', 'min_purchase_amount', 'usage_limit', 'usage_count', 'applicable_categories', 'applicable_products', 'active', 'description']) &&
+             data.code is string && data.code.size() > 0 && data.code.size() < 100 &&
+             data.discount_percentage is number && data.discount_percentage >= 0 && data.discount_percentage <= 100 &&
+             data.valid_from is string &&
+             data.valid_until is string &&
+             data.usage_count is int &&
+             data.active is bool;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && request.auth.uid == userId && 
+                    hasOnlyAllowedFields(['uid', 'displayName', 'email', 'photoURL', 'phone', 'city', 'address', 'role', 'approved', 'createdAt', 'lastLogin']) &&
+                    (!('role' in request.resource.data) || request.resource.data.role == 'user' || isAdmin()) &&
+                    (!('approved' in request.resource.data) || request.resource.data.approved == false || isAdmin());
+      allow update: if isAuthenticated() && (isOwner(userId) || isAdmin()) &&
+                    hasOnlyAllowedFields(['uid', 'displayName', 'email', 'photoURL', 'phone', 'city', 'address', 'role', 'approved', 'createdAt', 'lastLogin']) &&
+                    (!('role' in request.resource.data) || request.resource.data.role == resource.data.role || isAdmin()) &&
+                    (!('approved' in request.resource.data) || request.resource.data.approved == resource.data.approved || isAdmin());
+    }
+
+    match /buyers/{buyerId} {
+      allow read: if isAdmin() || (request.query.limit <= 1); // Allow checking for existing buyer by email
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    match /admin_requests/{requestId} {
+      // Allow public read so the AdminAuth component can check status before login
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if isAdmin();
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /banners/{bannerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /coupons/{couponId} {
+      allow read: if true; // Public read so checkout can validate
+      allow create: if isAdmin() && isValidCoupon(request.resource.data);
+      allow update: if isAdmin() && isValidCoupon(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /filters/{filterId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.token.email == resource.data.customer_email) || (resource.data.status in ['Pendiente de pago', 'Pagado']);
+      allow create: if true; // Allow guest checkout
+      allow update: if isAdmin() || (resource.data.status == 'Pendiente de pago' && request.resource.data.status in ['Pagado', 'Pendiente de pago'] && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'payment_id']));
+      allow delete: if isAdmin();
+    }
+
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isAuthenticated() && 
+                    request.resource.data.userId == request.auth.uid &&
+                    hasOnlyAllowedFields(['productId', 'userId', 'userName', 'rating', 'comment', 'createdAt']) &&
+                    request.resource.data.rating is int && 
+                    request.resource.data.rating >= 1 && 
+                    request.resource.data.rating <= 5 &&
+                    request.resource.data.comment is string &&
+                    request.resource.data.comment.size() <= 2000;
+      allow update: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid &&
+                    hasOnlyAllowedFields(['productId', 'userId', 'userName', 'rating', 'comment', 'createdAt']) &&
+                    request.resource.data.userId == resource.data.userId &&
+                    request.resource.data.productId == resource.data.productId);
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+    }
+
+    match /wishlists/{wishlistId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+  }
+}

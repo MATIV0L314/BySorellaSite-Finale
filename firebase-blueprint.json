@@ -1,0 +1,173 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A product in the store",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Product name" },
+        "description": { "type": "string", "description": "Product description" },
+        "price": { "type": "number", "description": "Product price" },
+        "category": { "type": "string", "description": "Product category" },
+        "stock": { "type": "integer", "description": "Available stock" },
+        "sizes": { "type": "array", "items": { "type": "string" } },
+        "colors": { "type": "array", "items": { "type": "string" } },
+        "fragrances": { "type": "array", "items": { "type": "string" } },
+        "image_url": { "type": "string", "description": "Main image URL" },
+        "gallery": { "type": "array", "items": { "type": "string" } },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "price"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "A product category",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Category name" },
+        "image_url": { "type": "string", "description": "Category image URL" },
+        "description": { "type": "string", "description": "Category description" },
+        "gallery": { "type": "array", "items": { "type": "string" } },
+        "is_protected": { "type": "boolean", "description": "If true, cannot be deleted" }
+      },
+      "required": ["name"]
+    },
+    "Banner": {
+      "title": "Banner",
+      "description": "A promotional banner",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "subtitle": { "type": "string" },
+        "button_text": { "type": "string" },
+        "button_link": { "type": "string" },
+        "image_url": { "type": "string" },
+        "is_fixed": { "type": "boolean" },
+        "order_index": { "type": "integer" }
+      },
+      "required": ["image_url"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "A customer order",
+      "type": "object",
+      "properties": {
+        "order_number": { "type": "string" },
+        "customer_email": { "type": "string" },
+        "customer_name": { "type": "string" },
+        "customer_phone": { "type": "string" },
+        "shipping_address": { "type": "string" },
+        "shipping_method": { "type": "string" },
+        "total": { "type": "number" },
+        "items": { "type": "array", "items": { "type": "object" } },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["order_number", "customer_email", "total", "items"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Global app settings",
+      "type": "object",
+      "properties": {
+        "whatsapp_number": { "type": "string" },
+        "admin_password": { "type": "string" },
+        "featured_category": { "type": "string" },
+        "featured_layout": { "type": "string" },
+        "mercadopago_public_key": { "type": "string" },
+        "mercadopago_access_token": { "type": "string" },
+        "announcement_text": { "type": "string" },
+        "announcement_bg": { "type": "string" },
+        "announcement_text_color": { "type": "string" },
+        "announcement_enabled": { "type": "string" },
+        "menu_items": { "type": "string" },
+        "business_hours": { "type": "string" },
+        "gemini_api_key": { "type": "string", "description": "Custom Gemini API Key" }
+      }
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile data",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "phone": { "type": "string" },
+        "city": { "type": "string" },
+        "address": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "client"] },
+        "approved": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "AdminRequest": {
+      "title": "AdminRequest",
+      "description": "A request for admin access",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "completed"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "status"]
+    },
+    "Coupon": {
+      "title": "Coupon",
+      "description": "A discount coupon",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "Coupon code" },
+        "discount_percentage": { "type": "number", "description": "Discount percentage" },
+        "valid_from": { "type": "string", "format": "date", "description": "Start date" },
+        "valid_until": { "type": "string", "format": "date", "description": "End date" },
+        "min_purchase_amount": { "type": "number", "description": "Minimum purchase amount" },
+        "usage_limit": { "type": "integer", "description": "Total usage limit" },
+        "usage_count": { "type": "integer", "description": "Current usage count" },
+        "applicable_categories": { "type": "array", "items": { "type": "string" } },
+        "applicable_products": { "type": "array", "items": { "type": "string" } },
+        "active": { "type": "boolean", "description": "If the coupon is active" },
+        "description": { "type": "string", "description": "Coupon description" }
+      },
+      "required": ["code", "discount_percentage", "valid_from", "valid_until", "usage_count", "active"]
+    },
+    "Review": {
+      "title": "Review",
+      "description": "A product review",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "rating": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "userId", "rating", "comment", "createdAt"]
+    },
+    "WishlistItem": {
+      "title": "WishlistItem",
+      "description": "An item in a user's wishlist",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "productId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "productId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "products": { "schema": "Product", "description": "Store products" },
+    "categories": { "schema": "Category", "description": "Product categories" },
+    "banners": { "schema": "Banner", "description": "Home banners" },
+    "settings": { "schema": "Settings", "description": "Global configuration" },
+    "orders": { "schema": "Order", "description": "Customer orders" },
+    "users": { "schema": "UserProfile", "description": "User profiles" },
+    "admin_requests": { "schema": "AdminRequest", "description": "Admin access requests" },
+    "coupons": { "schema": "Coupon", "description": "Discount coupons" },
+    "reviews": { "schema": "Review", "description": "Product reviews" },
+    "wishlists": { "schema": "WishlistItem", "description": "User wishlists" }
+  }
+}

@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-brand-peach: #E8C2B0;
+  --color-brand-dark: #1A1A1A;
+  --color-brand-nude: #F5EBE0;
+}
+
+@layer base {
+  :root {
+    --bg-primary: #FFFDF5;
+    --text-primary: #2D241E;
+    --bg-secondary: #F5EBE0;
+    --border-color: rgba(45, 36, 30, 0.12);
+  }
+
+  .dark {
+    --bg-primary: #2D241E;
+    --text-primary: #FFFDF5;
+    --bg-secondary: #3D322A;
+    --border-color: rgba(255, 253, 245, 0.1);
+  }
+
+  body {
+    @apply bg-[var(--bg-primary)] text-[var(--text-primary)] font-sans transition-colors duration-300;
+    cursor: none;
+  }
+
+  /* Ensure interactive elements also hide the cursor */
+  a, button, [role="button"], input, select, textarea {
+    cursor: none !important;
+  }
+}
+
+.glass-morphism {
+  @apply bg-[var(--bg-primary)]/80 backdrop-blur-md border border-[var(--border-color)];
+}
+
+.sticky-filter {
+  @apply sticky top-24 h-fit;
+}
+
+.card-bg {
+  @apply bg-[var(--bg-secondary)];
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #E8C2B0;
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #d4a896;
+}
