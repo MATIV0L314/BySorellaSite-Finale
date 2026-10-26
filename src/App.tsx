@@ -1,7 +1,7 @@
 import React, { useState, useEffect, FormEvent, useMemo } from 'react';
 import { Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion, AnimatePresence, useAnimation } from 'framer-motion';
-import { ShoppingBag, Menu, X, Settings as SettingsIcon, MessageSquare, Send, Plus, Trash2, Edit, Save, Wand2, ArrowRight, Phone, Image as ImageIcon, Layout, List, Sun, Moon, Globe, Clock, LogIn, LogOut, User as UserIcon, ImagePlus, Zap, Camera, CameraOff, ChevronDown, Package, UserCircle, DollarSign, LayoutGrid, Instagram, Facebook, Calendar, Maximize, Palette, Check, Users, Search, Upload, Download, Paperclip, FileText, Mail, Tag, Filter as FilterIcon, Heart } from 'lucide-react';
+import { ShoppingBag, Menu, X, Settings as SettingsIcon, MessageSquare, Send, Plus, Trash2, Edit, Save, Wand2, ArrowRight, Phone, Image as ImageIcon, Layout, List, Sun, Moon, Globe, Clock, LogIn, LogOut, User as UserIcon, ImagePlus, Zap, Camera, CameraOff, ChevronDown, Package, UserCircle, DollarSign, LayoutGrid, Instagram, Facebook, Calendar, Maximize, Palette, Check, Users, Search, Upload, Download, Paperclip, FileText, Mail, Tag, Filter as FilterIcon, Heart, Printer, Eye } from 'lucide-react';
 import * as Icons from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
@@ -1598,10 +1598,31 @@ const Navbar = ({
   );
 };
 
-const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrders }: { orders: Order[], t: any, onUpdateStatus: (id: string | number, status: string) => Promise<void>, onDeleteOrder: (id: string) => Promise<void>, onDeleteOrders: (ids: string[]) => Promise<void> }) => {
+const SalesManagement = ({ 
+  orders, 
+  t, 
+  settings,
+  onUpdateStatus, 
+  onDeleteOrder, 
+  onDeleteOrders 
+}: { 
+  orders: Order[], 
+  t: any, 
+  settings?: Settings | null,
+  onUpdateStatus: (id: string | number, status: string) => Promise<void>, 
+  onDeleteOrder: (id: string) => Promise<void>, 
+  onDeleteOrders: (ids: string[]) => Promise<void> 
+}) => {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [emailLoading, setEmailLoading] = useState<string | null>(null);
+  const [emailFeedback, setEmailFeedback] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewTitle, setPreviewTitle] = useState<string>('');
+
+  const storePhone = settings?.whatsapp_number || '+54 9 11 3509 2612';
+  const cleanStorePhone = storePhone.replace(/[^0-9]/g, '');
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.checked) {
@@ -1622,9 +1643,7 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
     if (window.confirm(`¿Estás seguro de que deseas eliminar ${selectedIds.length} pedidos?`)) {
       setIsDeleting(true);
       try {
-        console.log("Calling onDeleteOrders...");
         await onDeleteOrders(selectedIds);
-        console.log("onDeleteOrders completed successfully");
         setSelectedIds([]);
       } catch (err) {
         console.error("Bulk delete error in component:", err);
@@ -1636,13 +1655,10 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
   };
 
   const handleDelete = async (id: string | number) => {
-    console.log("handleDelete triggered for ID:", id);
     if (window.confirm('¿Estás seguro de que deseas eliminar este pedido?')) {
       setIsDeleting(true);
       try {
-        console.log("Calling onDeleteOrder...");
         await onDeleteOrder(String(id));
-        console.log("onDeleteOrder completed successfully");
         setSelectedIds(prev => prev.filter(i => i !== String(id)));
       } catch (err) {
         console.error("Delete error in component:", err);
@@ -1653,65 +1669,351 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
     }
   };
 
+  // Generate printable HTML document
+  const generatePrintHtml = (order: Order, type: 'order' | 'delivery'): string => {
+    const storeEmail = settings?.smtp_user || 'info@sorella.com';
+    const dateStr = order.created_at ? new Date(order.created_at).toLocaleString() : new Date().toLocaleString();
+
+    if (type === 'delivery') {
+      return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Remito de Entrega - #${order.order_number}</title>
+  <style>
+    @media print {
+      body { margin: 0; padding: 15px; font-size: 13px; color: #000; background: #fff; }
+      @page { size: auto; margin: 12mm; }
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; padding: 24px; max-width: 800px; margin: 0 auto; background: #fff; }
+    .box { border: 2px solid #0f172a; border-radius: 12px; padding: 24px; }
+    .header { border-bottom: 2px solid #0f172a; padding-bottom: 16px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-start; }
+    .title { font-size: 24px; font-weight: 800; margin: 0; color: #0f172a; letter-spacing: 0.5px; }
+    .subtitle { margin: 4px 0 0; font-size: 14px; font-weight: 700; color: #ea580c; text-transform: uppercase; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+    .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; }
+    .card h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; }
+    .card p { margin: 0 0 4px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; margin-bottom: 20px; }
+    th { text-align: left; background: #f1f5f9; padding: 10px 8px; font-size: 12px; text-transform: uppercase; border: 1px solid #cbd5e1; color: #334155; }
+    td { padding: 10px 8px; border: 1px solid #cbd5e1; font-size: 13px; }
+    .status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; background: #dcfce7; color: #166534; }
+    .signature-area { border: 1px dashed #94a3b8; border-radius: 8px; padding: 20px 16px; margin-top: 24px; background: #fafafa; }
+    .sig-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 24px; padding-top: 48px; }
+    .sig-line { border-top: 1px solid #334155; text-align: center; font-size: 12px; padding-top: 6px; font-weight: 600; color: #334155; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="header">
+      <div>
+        <h1 class="title">SORELLA INDUMENTARIA</h1>
+        <p class="subtitle">REMITO DE ENTREGA Y CONFORMIDAD</p>
+      </div>
+      <div style="text-align: right;">
+        <p style="margin: 0; font-size: 17px; font-weight: 800; color: #ea580c;">REMITO: REM-${order.order_number.replace('ORD-', '')}</p>
+        <p style="margin: 4px 0 0; font-size: 13px; color: #64748b;">Ref. Pedido: #${order.order_number}</p>
+        <p style="margin: 2px 0 0; font-size: 12px; color: #64748b;">Fecha: ${dateStr}</p>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h4>Remitente / Tienda</h4>
+        <p style="font-weight: 700; font-size: 14px;">Sorella Indumentaria</p>
+        <p>WhatsApp: <strong>${storePhone}</strong></p>
+        <p>Email: ${storeEmail}</p>
+        <p>Buenos Aires, Argentina</p>
+      </div>
+      <div class="card">
+        <h4>Destinatario / Entrega</h4>
+        <p style="font-weight: 700; font-size: 14px;">${order.receiver_first_name || ''} ${order.receiver_last_name || ''} (${order.customer_name})</p>
+        <p>DNI / Documento: <strong>${order.receiver_dni || 'No especificado'}</strong></p>
+        <p>Teléfono: <strong>${order.customer_phone || '-'}</strong></p>
+        <p>Dirección: <strong>${order.shipping_address || 'Retiro en sucursal'}</strong></p>
+        <p>Método de Envío: <strong>${order.shipping_method || 'A convenir'}</strong></p>
+      </div>
+    </div>
+
+    <h4 style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; color: #475569;">Detalle de Bultos y Artículos Entregados</h4>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 40px; text-align: center;">#</th>
+          <th>Descripción del Producto</th>
+          <th style="width: 160px;">Detalles (Talle / Color)</th>
+          <th style="width: 80px; text-align: center;">Cantidad</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${order.items.map((item, idx) => {
+          let opts = [];
+          if (item.selectedSize) opts.push(`Talle: ${item.selectedSize}`);
+          if (item.selectedColor) opts.push(`Color: ${item.selectedColor}`);
+          if (item.selectedDynamicFilters) {
+            Object.entries(item.selectedDynamicFilters).forEach(([k, v]) => opts.push(`${k}: ${v}`));
+          }
+          return `
+            <tr>
+              <td style="text-align: center; font-weight: 600;">${idx + 1}</td>
+              <td><strong>${item.name}</strong></td>
+              <td style="font-size: 12px; color: #475569;">${opts.join(', ') || '-'}</td>
+              <td style="text-align: center; font-weight: 800; font-size: 14px;">${item.quantity} u.</td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; background: #f8fafc; padding: 12px 16px; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 20px;">
+      <span style="font-size: 14px;">Total del Pedido: <strong>$${Number(order.total || 0).toLocaleString()}</strong></span>
+      <span class="status-badge">ESTADO: ${(order.status || 'PAGADO').toUpperCase()}</span>
+    </div>
+
+    <div class="signature-area">
+      <p style="margin: 0 0 16px; font-size: 12px; font-style: italic; color: #475569; text-align: center;">
+        Recibí conforme y en perfecto estado la totalidad de los productos y bultos descriptos en el presente remito.
+      </p>
+      <div class="sig-grid">
+        <div class="sig-line">Firma del Receptor</div>
+        <div class="sig-line">Aclaración / DNI</div>
+        <div class="sig-line">Fecha y Hora de Recepción</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+    }
+
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8"/>
+  <title>Comprobante de Pedido - #${order.order_number}</title>
+  <style>
+    @media print {
+      body { margin: 0; padding: 15px; font-size: 13px; color: #000; background: #fff; }
+      @page { size: auto; margin: 12mm; }
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #1e293b; padding: 24px; max-width: 800px; margin: 0 auto; background: #fff; }
+    .header { border-bottom: 2px solid #0f172a; padding-bottom: 16px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-start; }
+    .title { font-size: 26px; font-weight: 800; margin: 0; color: #0f172a; }
+    .subtitle { margin: 4px 0 0; font-size: 14px; color: #64748b; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; }
+    .card h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; color: #64748b; letter-spacing: 0.5px; }
+    .card p { margin: 0 0 4px; font-size: 13px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th { text-align: left; background: #f1f5f9; padding: 10px 8px; font-size: 12px; text-transform: uppercase; border-bottom: 1px solid #cbd5e1; color: #334155; }
+    td { padding: 12px 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
+    .total-row { font-size: 16px; font-weight: 700; }
+    .footer { margin-top: 36px; padding-top: 16px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #64748b; text-align: center; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; background: #dcfce7; color: #166534; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1 class="title">SORELLA INDUMENTARIA</h1>
+      <p class="subtitle">Comprobante de Venta y Detalle de Pedido</p>
+    </div>
+    <div style="text-align: right;">
+      <p style="margin: 0; font-size: 18px; font-weight: 800; color: #ea580c;">#${order.order_number}</p>
+      <p style="margin: 4px 0 0; font-size: 12px; color: #64748b;">${dateStr}</p>
+      <div style="margin-top: 6px;">
+        <span class="badge">${(order.status || 'PAGADO').toUpperCase()}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h4>Datos del Comprador</h4>
+      <p style="font-weight: 700; font-size: 15px;">${order.customer_name}</p>
+      <p>📧 Email: ${order.customer_email}</p>
+      <p>📞 Teléfono: ${order.customer_phone}</p>
+      ${order.payment_id ? `<p style="font-size: 12px; color: #64748b; margin-top: 6px;">ID Pago MP: ${order.payment_id}</p>` : ''}
+    </div>
+    <div class="card">
+      <h4>Datos de Entrega</h4>
+      <p style="font-weight: 700; font-size: 14px;">${order.shipping_method || 'A convenir'}</p>
+      ${order.shipping_method === 'Envio a domicilio' ? `<p>📍 Dirección: ${order.shipping_address || 'No especificada'}</p>` : '<p>Modalidad: Retiro en tienda</p>'}
+      ${order.receiver_dni ? `<p>👤 Receptor: ${order.receiver_first_name || ''} ${order.receiver_last_name || ''} (DNI: ${order.receiver_dni})</p>` : ''}
+    </div>
+  </div>
+
+  <h4 style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; color: #475569;">Productos</h4>
+  <table>
+    <thead>
+      <tr>
+        <th>Producto / Variantes</th>
+        <th style="width: 80px; text-align: center;">Cantidad</th>
+        <th style="width: 120px; text-align: right;">Precio Unit.</th>
+        <th style="width: 120px; text-align: right;">Subtotal</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${order.items.map(item => {
+        let opts = [];
+        if (item.selectedSize) opts.push(`Talle: ${item.selectedSize}`);
+        if (item.selectedColor) opts.push(`Color: ${item.selectedColor}`);
+        if (item.selectedDynamicFilters) {
+          Object.entries(item.selectedDynamicFilters).forEach(([k, v]) => opts.push(`${k}: ${v}`));
+        }
+        const optsStr = opts.length ? `<br/><span style="font-size: 11px; color: #64748b;">${opts.join(', ') || ''}</span>` : '';
+        return `
+          <tr>
+            <td><strong>${item.name}</strong>${optsStr}</td>
+            <td style="text-align: center;">${item.quantity}</td>
+            <td style="text-align: right;">$${Number(item.price || 0).toLocaleString()}</td>
+            <td style="text-align: right; font-weight: 700;">$${(Number(item.price || 0) * Number(item.quantity || 1)).toLocaleString()}</td>
+          </tr>
+        `;
+      }).join('')}
+    </tbody>
+    <tfoot>
+      <tr class="total-row">
+        <td colspan="3" style="text-align: right; padding-top: 16px;">TOTAL ABONADO:</td>
+        <td style="text-align: right; padding-top: 16px; color: #ea580c; font-size: 20px;">$${Number(order.total || 0).toLocaleString()}</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <div class="footer">
+    <p style="margin: 0 0 4px; font-weight: 700;">Sorella Indumentaria</p>
+    <p style="margin: 0;">WhatsApp: ${storePhone} | Email: ${storeEmail} | Buenos Aires, Argentina</p>
+  </div>
+</body>
+</html>`;
+  };
+
+  // Hidden Iframe Print - NO BLANK TABS
+  const printWithIframe = (htmlContent: string) => {
+    let iframe = document.getElementById('sorella-print-frame') as HTMLIFrameElement;
+    if (iframe) {
+      iframe.remove();
+    }
+    iframe = document.createElement('iframe');
+    iframe.id = 'sorella-print-frame';
+    iframe.style.position = 'fixed';
+    iframe.style.right = '0';
+    iframe.style.bottom = '0';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.style.opacity = '0';
+    iframe.style.pointerEvents = 'none';
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentWindow?.document || iframe.contentDocument;
+    if (!doc) {
+      console.error("No access to print iframe document");
+      return;
+    }
+    doc.open();
+    doc.write(htmlContent);
+    doc.close();
+
+    setTimeout(() => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } catch (e) {
+        console.warn("Print error in iframe:", e);
+      }
+    }, 450);
+  };
+
   const handlePrint = (type: 'order' | 'delivery') => {
     if (!selectedOrder) return;
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return;
+    const content = generatePrintHtml(selectedOrder, type);
+    printWithIframe(content);
+  };
 
-    const content = type === 'order' ? `
-      <html>
-        <head><title>${t.sales.order} #${selectedOrder.order_number}</title></head>
-        <body style="font-family: sans-serif; padding: 40px;">
-          <h1>Sorella Indumentaria</h1>
-          <h2>${t.sales.order} #${selectedOrder.order_number}</h2>
-          <hr/>
-          <p><strong>${t.sales.customer}:</strong> ${selectedOrder.customer_name}</p>
-          <p><strong>${t.sales.email}:</strong> ${selectedOrder.customer_email}</p>
-          <p><strong>${t.sales.phone}:</strong> ${selectedOrder.customer_phone}</p>
-          <p><strong>${t.sales.date}:</strong> ${selectedOrder.created_at ? new Date(selectedOrder.created_at).toLocaleString() : 'N/A'}</p>
-          <hr/>
-          <h3>${t.sales.products}:</h3>
-          <ul>
-            ${selectedOrder.items.map(item => {
-              let options = [];
-              if (item.selectedSize) options.push(`${t.product?.size || 'Talle'}: ${item.selectedSize}`);
-              if (item.selectedColor) options.push(`${t.product?.color || 'Color'}: ${item.selectedColor}`);
-              if (item.selectedDynamicFilters) {
-                Object.entries(item.selectedDynamicFilters).forEach(([key, value]) => options.push(`${key}: ${value}`));
-              }
-              const optionsStr = options.length > 0 ? ` (${options.join(', ')})` : '';
-              return `<li>${item.name}${optionsStr} x ${item.quantity} - $${item.price * item.quantity}</li>`;
-            }).join('')}
-          </ul>
-          <h3>${t.sales.total}: $${selectedOrder.total}</h3>
-          <hr/>
-          <p><strong>${t.sales.shippingMethod}:</strong> ${selectedOrder.shipping_method}</p>
-          <p><strong>${t.sales.shippingAddress}:</strong> ${selectedOrder.shipping_address}</p>
-        </body>
-      </html>
-    ` : `
-      <html>
-        <head><title>${t.sales.deliveryNote} #${selectedOrder.order_number}</title></head>
-        <body style="font-family: sans-serif; padding: 40px;">
-          <div style="border: 2px solid black; padding: 40px;">
-            <h1>Sorella Indumentaria - ${t.sales.deliveryNote.toUpperCase()}</h1>
-            <p>${t.sales.order} #${selectedOrder.order_number}</p>
-            <hr/>
-            <p><strong>${t.sales.recipient}:</strong> ${selectedOrder.customer_name}</p>
-            <p><strong>${t.sales.shippingAddress}:</strong> ${selectedOrder.shipping_address}</p>
-            <p><strong>${t.sales.phone}:</strong> ${selectedOrder.customer_phone}</p>
-            <hr/>
-            <div style="height: 200px; border: 1px dashed gray; margin-top: 40px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 10px;">
-              ${t.sales.customerSignature}
-            </div>
-          </div>
-        </body>
-      </html>
-    `;
+  const handleOpenPreview = (type: 'order' | 'delivery') => {
+    if (!selectedOrder) return;
+    const content = generatePrintHtml(selectedOrder, type);
+    setPreviewTitle(type === 'delivery' ? `Remito de Entrega #${selectedOrder.order_number}` : `Detalle de Pedido #${selectedOrder.order_number}`);
+    setPreviewHtml(content);
+  };
 
-    printWindow.document.write(content);
-    printWindow.document.close();
-    printWindow.print();
+  // WhatsApp sender
+  const handleSendWhatsApp = (order: Order, type: 'status' | 'remito' = 'status') => {
+    const cleanPhone = (order.customer_phone || '').replace(/[^0-9]/g, '');
+    let text = '';
+
+    if (type === 'remito') {
+      const itemsText = order.items.map(i => {
+        let opts = [];
+        if (i.selectedSize) opts.push(`Talle: ${i.selectedSize}`);
+        if (i.selectedColor) opts.push(`Color: ${i.selectedColor}`);
+        const optsStr = opts.length ? ` (${opts.join(', ')})` : '';
+        return `• ${i.name}${optsStr} x${i.quantity}`;
+      }).join('\n');
+
+      text = `📦 *REMITO DE ENTREGA - SORELLA INDUMENTARIA*\n\n` +
+             `*Pedido:* #${order.order_number}\n` +
+             `*Destinatario:* ${order.receiver_first_name || ''} ${order.receiver_last_name || ''} (${order.customer_name})\n` +
+             (order.receiver_dni ? `*DNI Receptor:* ${order.receiver_dni}\n` : '') +
+             `*Dirección de Entrega:* ${order.shipping_address || 'Retiro en sucursal'}\n` +
+             `*Método de Envío:* ${order.shipping_method}\n` +
+             `*Estado:* ${order.status || 'Pagado'}\n\n` +
+             `*Artículos a Entregar:*\n${itemsText}\n\n` +
+             `*Total:* $${Number(order.total || 0).toLocaleString()}\n\n` +
+             `Por favor confirmar la recepción del paquete. ¡Muchas gracias por tu compra en Sorella!`;
+    } else {
+      const itemsSummary = order.items.map(i => `${i.name} (x${i.quantity})`).join(', ');
+      text = `Hola ${order.customer_name}! Te escribimos de *Sorella Indumentaria* sobre tu pedido *#${order.order_number}*.\n\n` +
+             `Estado: *${order.status}*\n` +
+             `Total: *$${Number(order.total || 0).toLocaleString()}*\n` +
+             `Productos: ${itemsSummary}\n` +
+             (order.shipping_method === 'Envio a domicilio' ? `Dirección de envío: ${order.shipping_address}\n` : 'Modalidad: Retiro en local\n') +
+             `\n¿Tienes alguna consulta o deseas coordinar la entrega? Estamos a tu disposición.`;
+    }
+
+    const url = cleanPhone 
+      ? `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`
+      : `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, '_blank');
+  };
+
+  // Email sender
+  const handleSendEmail = async (order: Order, type: 'order' | 'delivery' = 'order') => {
+    setEmailLoading(order.order_number);
+    setEmailFeedback(null);
+    try {
+      const res = await fetch('/api/admin/send-order-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_number: order.order_number,
+          customer_email: order.customer_email,
+          type
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setEmailFeedback({ type: 'success', text: `Correo enviado exitosamente a ${order.customer_email}` });
+      } else {
+        // Offer mailto fallback
+        setEmailFeedback({ 
+          type: 'error', 
+          text: data.error || 'No se pudo enviar por SMTP. Puedes abrir tu cliente de correo.' 
+        });
+      }
+    } catch (err: any) {
+      setEmailFeedback({ type: 'error', text: err?.message || 'Error al conectar con el servidor de correos.' });
+    } finally {
+      setEmailLoading(null);
+    }
+  };
+
+  const handleOpenMailto = (order: Order) => {
+    const subject = encodeURIComponent(`Sorella Indumentaria - Pedido #${order.order_number}`);
+    const body = encodeURIComponent(
+      `Hola ${order.customer_name},\n\nTe escribimos de Sorella Indumentaria en relación a tu pedido #${order.order_number}.\n\nEstado: ${order.status}\nTotal: $${order.total}\nMétodo de Envío: ${order.shipping_method}\n\nContacto de la tienda: ${storePhone}\n\nSaludos cordiales,\nSorella Indumentaria`
+    );
+    window.open(`mailto:${order.customer_email}?subject=${subject}&body=${body}`, '_blank');
   };
 
   const handleDownloadExcel = () => {
@@ -1752,8 +2054,21 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
 
   return (
     <div className="space-y-6">
+      {/* Toast Feedback */}
+      {emailFeedback && (
+        <div className={`p-4 rounded-2xl flex items-center justify-between shadow-lg text-sm font-semibold ${emailFeedback.type === 'success' ? 'bg-green-600 text-white' : 'bg-amber-600 text-white'}`}>
+          <span>{emailFeedback.text}</span>
+          <button onClick={() => setEmailFeedback(null)} className="p-1 hover:bg-black/20 rounded-full">
+            <X size={16} />
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <h3 className="text-xl font-bold text-[var(--text-primary)]">{t.admin.sales.title}</h3>
+        <div>
+          <h3 className="text-xl font-bold text-[var(--text-primary)]">{t.admin.sales.title}</h3>
+          <p className="text-xs text-[var(--text-secondary)] mt-0.5">Control de pagos, remitos de despacho y comunicación directa por WhatsApp/Email</p>
+        </div>
         <div className="flex flex-wrap gap-3">
           <button 
             onClick={handleDownloadExcel}
@@ -1775,10 +2090,10 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto rounded-2xl border border-[var(--border-color)] bg-[var(--bg-primary)]">
         <table className="w-full text-left">
           <thead>
-            <tr className="border-b border-[var(--border-color)] text-xs font-bold uppercase text-[var(--text-secondary)]">
+            <tr className="border-b border-[var(--border-color)] text-xs font-bold uppercase text-[var(--text-secondary)] bg-[var(--bg-secondary)]/50">
               <th className="py-4 px-4">
                 <input 
                   type="checkbox" 
@@ -1792,12 +2107,13 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
               <th className="py-4 px-4">{t.admin.sales.total}</th>
               <th className="py-4 px-4">{t.admin.sales.status}</th>
               <th className="py-4 px-4">{t.admin.sales.date}</th>
-              <th className="py-4 px-4">{t.admin.sales.actions}</th>
+              <th className="py-4 px-4 text-center">Contacto / Remito</th>
+              <th className="py-4 px-4 text-right">{t.admin.sales.actions}</th>
             </tr>
           </thead>
           <tbody>
             {orders.map(order => (
-              <tr key={order.id} className={`border-b border-[var(--border-color)] hover:bg-[var(--bg-secondary)] transition-colors ${selectedIds.includes(String(order.id)) ? 'bg-brand-peach/5' : ''}`}>
+              <tr key={order.id} className={`border-b border-[var(--border-color)] hover:bg-[var(--bg-secondary)]/50 transition-colors ${selectedIds.includes(String(order.id)) ? 'bg-brand-peach/5' : ''}`}>
                 <td className="py-4 px-4">
                   <input 
                     type="checkbox" 
@@ -1806,19 +2122,31 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
                     className="w-4 h-4 rounded border-[var(--border-color)] accent-brand-peach"
                   />
                 </td>
-                <td className="py-4 px-4 font-bold text-[var(--text-primary)]">{order.order_number}</td>
+                <td className="py-4 px-4">
+                  <div className="font-bold text-[var(--text-primary)]">{order.order_number}</div>
+                  {order.payment_id && (
+                    <span className="text-[10px] text-green-600 font-mono font-medium block">MP: {order.payment_id}</span>
+                  )}
+                </td>
                 <td className="py-4 px-4">
                   <p className="font-medium text-[var(--text-primary)]">{order.customer_name}</p>
                   <p className="text-xs text-[var(--text-secondary)]">{order.customer_email}</p>
+                  <p className="text-xs text-green-600 font-medium">{order.customer_phone}</p>
                 </td>
-                <td className="py-4 px-4 font-bold text-[var(--text-primary)]">${order.total}</td>
+                <td className="py-4 px-4 font-bold text-[var(--text-primary)]">${Number(order.total || 0).toLocaleString()}</td>
                 <td className="py-4 px-4">
                   <select 
                     value={order.status}
                     onChange={(e) => onUpdateStatus(order.id!, e.target.value)}
-                    className="bg-[var(--bg-secondary)] px-3 py-1 rounded-full text-xs font-bold outline-none border border-[var(--border-color)] text-[var(--text-primary)]"
+                    className={`px-3 py-1.5 rounded-full text-xs font-bold outline-none border transition-colors ${
+                      order.status === 'Pagado' ? 'bg-green-500/10 text-green-600 border-green-500/30' :
+                      order.status === 'Pendiente de pago' ? 'bg-amber-500/10 text-amber-600 border-amber-500/30' :
+                      order.status === 'En proceso' ? 'bg-blue-500/10 text-blue-600 border-blue-500/30' :
+                      'bg-[var(--bg-secondary)] text-[var(--text-primary)] border-[var(--border-color)]'
+                    }`}
                   >
                     <option value="En proceso" className="bg-[var(--bg-primary)] text-[var(--text-primary)]">{t.admin.sales.statuses.processing}</option>
+                    <option value="Pendiente de pago" className="bg-[var(--bg-primary)] text-[var(--text-primary)]">Pendiente de pago</option>
                     <option value="Pagado" className="bg-[var(--bg-primary)] text-[var(--text-primary)]">{t.admin.sales.statuses.paid}</option>
                     <option value="En camino" className="bg-[var(--bg-primary)] text-[var(--text-primary)]">{t.admin.sales.statuses.shipping}</option>
                     <option value="Finalizado" className="bg-[var(--bg-primary)] text-[var(--text-primary)]">{t.admin.sales.statuses.completed}</option>
@@ -1828,20 +2156,51 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
                 <td className="py-4 px-4 text-xs text-[var(--text-secondary)]">
                   {order.created_at ? new Date(order.created_at).toLocaleDateString() : 'N/A'}
                 </td>
-                <td className="py-4 px-4">
-                  <div className="flex items-center gap-2">
+                <td className="py-4 px-4 text-center">
+                  <div className="flex items-center justify-center gap-1.5">
+                    {/* Send WhatsApp directly */}
                     <button 
-                      onClick={() => setSelectedOrder(order)}
-                      className="p-2 hover:bg-brand-peach/20 rounded-full text-brand-peach transition-colors"
+                      title="Enviar WhatsApp con datos del pedido"
+                      onClick={() => handleSendWhatsApp(order, 'status')}
+                      className="p-2 bg-green-500/10 hover:bg-green-500 text-green-600 hover:text-white rounded-xl transition-all shadow-sm"
                     >
-                      <Edit size={18} />
+                      <MessageSquare size={16} />
+                    </button>
+                    {/* Send Email directly */}
+                    <button 
+                      title="Enviar Correo de confirmación por SMTP"
+                      disabled={emailLoading === order.order_number}
+                      onClick={() => handleSendEmail(order, 'order')}
+                      className="p-2 bg-blue-500/10 hover:bg-blue-500 text-blue-600 hover:text-white rounded-xl transition-all shadow-sm disabled:opacity-50"
+                    >
+                      {emailLoading === order.order_number ? <Clock size={16} className="animate-spin" /> : <Mail size={16} />}
+                    </button>
+                    {/* Send Remito WhatsApp */}
+                    <button 
+                      title="Enviar Remito de entrega por WhatsApp"
+                      onClick={() => handleSendWhatsApp(order, 'remito')}
+                      className="p-2 bg-orange-500/10 hover:bg-orange-500 text-orange-600 hover:text-white rounded-xl transition-all shadow-sm"
+                    >
+                      <Package size={16} />
+                    </button>
+                  </div>
+                </td>
+                <td className="py-4 px-4 text-right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <button 
+                      title="Ver Detalles y Comprobantes"
+                      onClick={() => setSelectedOrder(order)}
+                      className="p-2 bg-brand-peach/10 hover:bg-brand-peach text-brand-peach hover:text-white rounded-xl transition-all"
+                    >
+                      <Edit size={16} />
                     </button>
                     <button 
+                      title="Eliminar Pedido"
                       onClick={() => handleDelete(order.id!)}
                       disabled={isDeleting}
-                      className="p-2 hover:bg-red-500/20 rounded-full text-red-500 transition-colors disabled:opacity-50"
+                      className="p-2 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-white rounded-xl transition-all disabled:opacity-50"
                     >
-                      <Trash2 size={18} />
+                      <Trash2 size={16} />
                     </button>
                   </div>
                 </td>
@@ -1851,48 +2210,113 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
         </table>
       </div>
 
+      {/* Order Details Modal */}
       <AnimatePresence>
         {selectedOrder && (
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[80] bg-black/80 flex items-center justify-center p-6"
+            className="fixed inset-0 z-[80] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 md:p-6 overflow-y-auto"
           >
             <motion.div 
-              initial={{ scale: 0.9 }}
-              animate={{ scale: 1 }}
-              className="bg-[var(--bg-primary)] w-full max-w-2xl rounded-[40px] overflow-hidden p-8 border border-[var(--border-color)] shadow-2xl"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-[var(--bg-primary)] w-full max-w-3xl rounded-[32px] overflow-hidden p-6 md:p-8 border border-[var(--border-color)] shadow-2xl my-auto max-h-[90vh] overflow-y-auto"
             >
-              <div className="flex justify-between items-center mb-8 text-[var(--text-primary)]">
-                <h2 className="text-2xl font-bold">{t.admin.sales.details} #{selectedOrder.order_number}</h2>
-                <button onClick={() => setSelectedOrder(null)} className="hover:rotate-90 transition-transform"><X /></button>
+              <div className="flex justify-between items-center mb-6 pb-4 border-b border-[var(--border-color)] text-[var(--text-primary)]">
+                <div>
+                  <h2 className="text-2xl font-bold flex items-center gap-3">
+                    {t.admin.sales.details} #{selectedOrder.order_number}
+                    <span className={`text-xs px-3 py-1 rounded-full font-bold ${
+                      selectedOrder.status === 'Pagado' ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'
+                    }`}>
+                      {selectedOrder.status}
+                    </span>
+                  </h2>
+                  <p className="text-xs text-[var(--text-secondary)] mt-1">
+                    Fecha: {selectedOrder.created_at ? new Date(selectedOrder.created_at).toLocaleString() : 'N/A'}
+                    {selectedOrder.payment_id && ` • ID Pago MP: ${selectedOrder.payment_id}`}
+                  </p>
+                </div>
+                <button onClick={() => setSelectedOrder(null)} className="p-2 hover:bg-[var(--bg-secondary)] rounded-full transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                  <X size={22} />
+                </button>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-8 mb-8">
-                <div>
-                  <h4 className="text-xs font-bold uppercase text-[var(--text-secondary)] mb-2">{t.admin.sales.customer}</h4>
-                  <p className="font-bold text-[var(--text-primary)]">{selectedOrder.customer_name}</p>
-                  <p className="text-sm text-[var(--text-secondary)]">{selectedOrder.customer_email}</p>
-                  <p className="text-sm text-[var(--text-secondary)]">{selectedOrder.customer_phone}</p>
+              {/* Customer & Shipping Details */}
+              <div className="grid md:grid-cols-2 gap-6 mb-6">
+                <div className="bg-[var(--bg-secondary)] p-5 rounded-2xl border border-[var(--border-color)]">
+                  <h4 className="text-xs font-bold uppercase text-[var(--text-secondary)] mb-3 flex items-center gap-1.5">
+                    <UserCircle size={14} /> {t.admin.sales.customer}
+                  </h4>
+                  <p className="font-bold text-[var(--text-primary)] text-base">{selectedOrder.customer_name}</p>
+                  <p className="text-sm text-[var(--text-secondary)] mt-0.5">📧 {selectedOrder.customer_email}</p>
+                  <p className="text-sm text-green-600 font-semibold mt-0.5">📞 {selectedOrder.customer_phone}</p>
+                  
+                  {/* Direct Contact Buttons */}
+                  <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-[var(--border-color)]">
+                    <button 
+                      onClick={() => handleSendWhatsApp(selectedOrder, 'status')}
+                      className="flex items-center gap-1.5 bg-[#25D366] text-white px-3 py-1.5 rounded-xl text-xs font-bold hover:brightness-105 shadow-sm"
+                    >
+                      <MessageSquare size={14} /> WhatsApp Comprador
+                    </button>
+                    <button 
+                      onClick={() => handleSendEmail(selectedOrder, 'order')}
+                      disabled={emailLoading === selectedOrder.order_number}
+                      className="flex items-center gap-1.5 bg-blue-600 text-white px-3 py-1.5 rounded-xl text-xs font-bold hover:bg-blue-700 shadow-sm disabled:opacity-50"
+                    >
+                      <Mail size={14} /> {emailLoading === selectedOrder.order_number ? 'Enviando...' : 'Reenviar Email'}
+                    </button>
+                    <button 
+                      onClick={() => handleOpenMailto(selectedOrder)}
+                      className="p-1.5 text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs underline font-medium"
+                      title="Abrir en Gmail/Outlook"
+                    >
+                      Abrir cliente de correo
+                    </button>
+                  </div>
                 </div>
-                <div>
-                  <h4 className="text-xs font-bold uppercase text-[var(--text-secondary)] mb-2">{t.admin.sales.shippingMethod}</h4>
+
+                <div className="bg-[var(--bg-secondary)] p-5 rounded-2xl border border-[var(--border-color)]">
+                  <h4 className="text-xs font-bold uppercase text-[var(--text-secondary)] mb-3 flex items-center gap-1.5">
+                    <Package size={14} /> {t.admin.sales.shippingMethod}
+                  </h4>
                   <p className="font-bold text-[var(--text-primary)]">{selectedOrder.shipping_method}</p>
                   {selectedOrder.shipping_method === 'Envio a domicilio' && (
-                    <p className="text-sm text-[var(--text-secondary)]">{selectedOrder.shipping_address}</p>
+                    <p className="text-sm text-[var(--text-secondary)] mt-1">📍 Dirección: {selectedOrder.shipping_address}</p>
                   )}
+                  {selectedOrder.receiver_dni && (
+                    <div className="mt-3 p-2.5 bg-brand-peach/10 rounded-xl border border-brand-peach/20 text-xs text-[var(--text-primary)]">
+                      <p className="font-bold text-brand-peach">Datos de Recepción / Despacho:</p>
+                      <p>👤 {selectedOrder.receiver_first_name} {selectedOrder.receiver_last_name}</p>
+                      <p>🆔 DNI: <strong>{selectedOrder.receiver_dni}</strong></p>
+                    </div>
+                  )}
+
+                  {/* Send Remito button */}
+                  <div className="mt-4 pt-3 border-t border-[var(--border-color)]">
+                    <button 
+                      onClick={() => handleSendWhatsApp(selectedOrder, 'remito')}
+                      className="w-full flex items-center justify-center gap-1.5 bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm"
+                    >
+                      <Package size={14} /> Enviar Remito por WhatsApp
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <div className="bg-[var(--bg-secondary)] rounded-3xl p-6 mb-8 border border-[var(--border-color)]">
-                <h4 className="text-xs font-bold uppercase text-[var(--text-secondary)] mb-4">Productos</h4>
-                <div className="space-y-4">
+              {/* Items List */}
+              <div className="bg-[var(--bg-secondary)] rounded-2xl p-5 mb-6 border border-[var(--border-color)]">
+                <h4 className="text-xs font-bold uppercase text-[var(--text-secondary)] mb-3">Productos del Pedido</h4>
+                <div className="space-y-3">
                   {selectedOrder.items.map((item, idx) => (
-                    <div key={idx} className="flex flex-col text-sm text-[var(--text-primary)] border-b border-[var(--border-color)] pb-2 last:border-0 last:pb-0">
+                    <div key={idx} className="flex flex-col text-sm text-[var(--text-primary)] border-b border-[var(--border-color)] pb-2.5 last:border-0 last:pb-0">
                       <div className="flex justify-between">
-                        <span className="font-bold">{item.name} x {item.quantity}</span>
-                        <span className="font-bold">${item.price * item.quantity}</span>
+                        <span className="font-bold">{item.name} <span className="text-brand-peach">x{item.quantity}</span></span>
+                        <span className="font-bold">${(Number(item.price || 0) * Number(item.quantity || 1)).toLocaleString()}</span>
                       </div>
                       <div className="text-xs text-[var(--text-secondary)] mt-1 space-y-0.5">
                         {item.selectedSize && <p>Talle: {item.selectedSize}</p>}
@@ -1908,26 +2332,80 @@ const SalesManagement = ({ orders, t, onUpdateStatus, onDeleteOrder, onDeleteOrd
                       </div>
                     </div>
                   ))}
-                  <div className="pt-4 border-t border-[var(--border-color)] flex justify-between font-bold text-lg text-[var(--text-primary)]">
-                    <span>Total</span>
-                    <span>${selectedOrder.total}</span>
+                  <div className="pt-3 border-t border-[var(--border-color)] flex justify-between font-bold text-lg text-[var(--text-primary)]">
+                    <span>Total Abonado</span>
+                    <span className="text-brand-peach">${Number(selectedOrder.total || 0).toLocaleString()}</span>
                   </div>
                 </div>
               </div>
 
-              <div className="flex gap-4">
+              {/* Action Buttons for Printing & Preview */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <button 
                   onClick={() => handlePrint('order')}
-                  className="flex-1 bg-brand-peach text-white py-4 rounded-2xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition-all shadow-lg"
+                  className="bg-brand-peach text-white py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:opacity-90 transition-all shadow-md"
                 >
-                  <Send size={18} /> {t.admin.sales.printOrder}
+                  <Printer size={16} /> Imprimir Pedido
                 </button>
                 <button 
                   onClick={() => handlePrint('delivery')}
-                  className="flex-1 border-2 border-brand-peach py-4 rounded-2xl font-bold flex items-center justify-center gap-2 text-brand-peach hover:bg-brand-peach hover:text-white transition-all"
+                  className="bg-gray-800 text-white py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-black transition-all shadow-md"
                 >
-                  <Package size={18} /> {t.admin.sales.printDelivery}
+                  <Printer size={16} /> Imprimir Remito
                 </button>
+                <button 
+                  onClick={() => handleOpenPreview('order')}
+                  className="border-2 border-brand-peach text-brand-peach py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-brand-peach hover:text-white transition-all"
+                >
+                  <Eye size={16} /> Vista Pedido
+                </button>
+                <button 
+                  onClick={() => handleOpenPreview('delivery')}
+                  className="border-2 border-gray-700 text-[var(--text-primary)] py-3 px-4 rounded-xl font-bold text-xs flex items-center justify-center gap-2 hover:bg-gray-700 hover:text-white transition-all"
+                >
+                  <Eye size={16} /> Vista Remito
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* On-screen Preview Modal */}
+      <AnimatePresence>
+        {previewHtml && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[90] bg-black/85 flex items-center justify-center p-4 md:p-6"
+          >
+            <motion.div 
+              initial={{ scale: 0.95 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.95 }}
+              className="bg-white text-gray-900 w-full max-w-4xl rounded-3xl overflow-hidden p-6 border shadow-2xl max-h-[92vh] flex flex-col"
+            >
+              <div className="flex justify-between items-center pb-4 border-b">
+                <h3 className="font-bold text-lg">{previewTitle}</h3>
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => printWithIframe(previewHtml)}
+                    className="flex items-center gap-2 bg-brand-peach text-white px-5 py-2 rounded-full font-bold text-xs shadow-md hover:opacity-90"
+                  >
+                    <Printer size={14} /> Imprimir Ahora
+                  </button>
+                  <button onClick={() => setPreviewHtml(null)} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
+                    <X size={20} />
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto mt-4 p-2 bg-gray-50 rounded-2xl border">
+                <iframe 
+                  srcDoc={previewHtml} 
+                  title="Vista Previa" 
+                  className="w-full h-[600px] bg-white rounded-xl shadow-inner border-0"
+                />
               </div>
             </motion.div>
           </motion.div>
@@ -5935,7 +6413,12 @@ function AppContent() {
                                     const res = await fetch('/api/admin/test-email', {
                                       method: 'POST',
                                       headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ email })
+                                      body: JSON.stringify({ 
+                                        email, 
+                                        to_email: email,
+                                        smtp_user: settings?.smtp_user, 
+                                        smtp_pass: settings?.smtp_pass 
+                                      })
                                     });
                                     const data = await res.json();
                                     if (res.ok) {
@@ -6895,6 +7378,7 @@ function AppContent() {
                       <SalesManagement 
                         orders={orders} 
                         t={t} 
+                        settings={settings}
                         onUpdateStatus={async (id, status) => {
                           try {
                             await updateOrderStatus(String(id), status);
@@ -8034,7 +8518,7 @@ function AppContent() {
       <Route path="/product/:id" element={<ProductPage products={products} filters={filters} t={t} onAddToCart={addToCart} onWishlistToggle={toggleWishlist} wishlist={wishlist} />} />
       <Route path="/wishlist" element={<WishlistPage products={products} t={t} onAddToCart={addToCart} onWishlistToggle={toggleWishlist} wishlist={wishlist} />} />
       <Route path="/checkout" element={<CheckoutPage cart={cart} user={user} t={t} apiStatus={apiStatus} settings={settings} coupons={coupons} filters={filters} onOrderSuccess={() => setCart([])} />} />
-      <Route path="/success" element={<SuccessPage t={t} />} />
+      <Route path="/success" element={<SuccessPage t={t} settings={settings} />} />
       <Route path="/terminos" element={<LegalPage title="Términos y Condiciones" t={t} />} />
       <Route path="/privacidad" element={<LegalPage title="Política de Privacidad" t={t} />} />
       <Route path="/envios" element={<LegalPage title="Política de Envíos" t={t} />} />
@@ -8187,18 +8671,102 @@ const LegalPage = ({ title, t }: { title: string, t: any }) => {
   );
 };
 
-const SuccessPage = ({ t }: { t: any }) => {
+const SuccessPage = ({ t, settings }: { t: any, settings?: Settings | null }) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const [orderId, setOrderId] = useState<string | null>(null);
+  const [paymentId, setPaymentId] = useState<string | null>(null);
+  const [isConfirmed, setIsConfirmed] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const orderParam = params.get('order_id') || params.get('external_reference');
+    const paymentParam = params.get('payment_id') || params.get('collection_id');
+    const statusParam = params.get('status') || params.get('collection_status');
+
+    if (orderParam) {
+      setOrderId(orderParam);
+      if (paymentParam) setPaymentId(paymentParam);
+
+      console.log(`[SUCCESS_PAGE] Confirming payment for order: ${orderParam}, payment: ${paymentParam}`);
+      
+      // 1. Notify backend to update status to Pagado, deduct stock, and send confirmation emails
+      fetch('/api/checkout/confirm-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          order_number: orderParam,
+          payment_id: paymentParam,
+          status: statusParam || 'approved'
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        console.log("[SUCCESS_PAGE] Backend order confirmation response:", data);
+        setIsConfirmed(true);
+      })
+      .catch(err => {
+        console.warn("[SUCCESS_PAGE] Backend confirmation error, updating client SDK:", err);
+      });
+
+      // 2. Direct client fallback update via Firebase SDK
+      try {
+        updateOrderStatus(orderParam, 'Pagado');
+        setIsConfirmed(true);
+      } catch (clientErr) {
+        console.warn("[SUCCESS_PAGE] Client SDK direct update warning:", clientErr);
+      }
+    }
+  }, [location.search]);
+
+  const storePhone = settings?.whatsapp_number || '+54 9 11 3509 2612';
+  const cleanPhone = storePhone.replace(/[^0-9]/g, '');
+  const whatsappUrl = settings?.whatsapp_link || `https://wa.me/${cleanPhone}?text=${encodeURIComponent(`¡Hola Sorella! Acabo de realizar el pago de mi pedido ${orderId ? `#${orderId}` : ''}. Quería coordinar la entrega.`)}`;
+
   return (
     <div className="pt-32 pb-20 px-6 text-center max-w-2xl mx-auto">
-      <div className="w-20 h-20 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-8">
-        <ShoppingBag size={40} />
+      <div className="w-20 h-20 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-xl shadow-green-500/10">
+        <Check size={44} strokeWidth={3} />
       </div>
-      <h1 className="text-4xl font-bold mb-4 tracking-tighter text-[var(--text-primary)]">{t.checkout.successTitle}</h1>
-      <p className="text-[var(--text-secondary)] mb-12">{t.checkout.successMessage}</p>
+      
+      <h1 className="text-4xl font-bold mb-3 tracking-tighter text-[var(--text-primary)]">
+        {t.checkout.successTitle || "¡Pago Confirmado con Éxito!"}
+      </h1>
+      
+      {orderId && (
+        <div className="inline-flex items-center gap-2 bg-green-500/10 text-green-600 px-4 py-1.5 rounded-full text-sm font-bold mb-4 border border-green-500/20">
+          <span>Pedido #{orderId}</span>
+          <span className="bg-green-600 text-white text-[10px] px-2 py-0.5 rounded-full">PAGADO</span>
+        </div>
+      )}
+
+      <p className="text-[var(--text-secondary)] mb-8 text-base leading-relaxed">
+        {t.checkout.successMessage || "Hemos recibido tu pago por Mercado Pago y tu pedido ya está siendo preparado en nuestro taller. Te enviamos los detalles a tu casilla de correo."}
+      </p>
+
+      {/* Prominent Store Contact Box */}
+      <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-3xl p-6 mb-8 text-left shadow-sm">
+        <h3 className="font-bold text-sm uppercase text-[var(--text-secondary)] mb-2 flex items-center gap-2">
+          <Phone size={16} className="text-green-600" /> Coordinación y Contacto Directo
+        </h3>
+        <p className="text-sm text-[var(--text-primary)] mb-4">
+          Nos pondremos en contacto contigo a la brevedad para coordinar el envío o entrega. Si prefieres avisarnos de inmediato, escríbenos directamente por WhatsApp:
+        </p>
+        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+          <a 
+            href={whatsappUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 bg-[#25D366] hover:bg-[#20ba59] text-white py-3 px-5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition-all"
+          >
+            <MessageSquare size={18} /> Escribirnos por WhatsApp ({storePhone})
+          </a>
+        </div>
+      </div>
+
       <button 
         onClick={() => navigate('/')}
-        className="bg-brand-peach text-white px-12 py-4 rounded-full font-bold shadow-lg shadow-brand-peach/20 hover:scale-105 transition-transform"
+        className="bg-brand-peach text-white px-10 py-3.5 rounded-full font-bold shadow-lg shadow-brand-peach/20 hover:scale-105 transition-transform text-sm"
       >
         {t.checkout.backToCatalog}
       </button>
@@ -8399,6 +8967,7 @@ const CheckoutPage = ({ cart, user, t, apiStatus, settings, coupons, filters, on
           
           if (mpData.init_point) {
             setPaymentLink(mpData.init_point);
+            onOrderSuccess();
             console.log("Redirecting to Mercado Pago init_point:", mpData.init_point);
             // Try to open in new tab first to avoid iframe issues
             try {

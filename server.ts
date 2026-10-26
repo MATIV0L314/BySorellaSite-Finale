@@ -158,13 +158,24 @@ async function getServerSettings(forceRefresh = false) {
 }
 
 // Helpers for order management across Client SDK and Admin SDK
-async function findOrderByNumber(orderNumber: string): Promise<{ id: string; data: any; ref?: any } | null> {
+async function findOrderByNumber(orderIdentifier: string): Promise<{ id: string; data: any; ref?: any } | null> {
+  if (!orderIdentifier) return null;
+  const cleanId = String(orderIdentifier).trim();
+
   if (clientDb) {
     try {
-      const q = clientQuery(clientCollection(clientDb, 'orders'), clientWhere('order_number', '==', orderNumber));
+      // 1. Try finding by order_number field
+      const q = clientQuery(clientCollection(clientDb, 'orders'), clientWhere('order_number', '==', cleanId));
       const snap = await getClientDocs(q);
       if (!snap.empty) {
         return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+      }
+
+      // 2. Try finding directly by doc ID
+      const dRef = clientDoc(clientDb, 'orders', cleanId);
+      const dSnap = await getClientDoc(dRef);
+      if (dSnap.exists()) {
+        return { id: dSnap.id, data: dSnap.data(), ref: dRef };
       }
     } catch (e: any) {
       console.warn("[SERVER] Client SDK findOrderByNumber failed:", e?.message);
@@ -173,9 +184,13 @@ async function findOrderByNumber(orderNumber: string): Promise<{ id: string; dat
 
   if (db) {
     try {
-      const snap = await db.collection('orders').where('order_number', '==', orderNumber).get();
+      const snap = await db.collection('orders').where('order_number', '==', cleanId).get();
       if (!snap.empty) {
         return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+      }
+      const directDoc = await db.collection('orders').doc(cleanId).get();
+      if (directDoc.exists) {
+        return { id: directDoc.id, data: directDoc.data(), ref: directDoc.ref };
       }
     } catch (e: any) {
       console.warn("[SERVER] Admin SDK findOrderByNumber failed:", e?.message);
@@ -245,42 +260,73 @@ async function sendEmail(to: string, subject: string, html: string) {
   try {
     const config = await getServerSettings();
 
-    const smtpUser = process.env.SMTP_USER || config.smtp_user;
-    const smtpPass = process.env.SMTP_PASS || config.smtp_pass;
+    const rawUser = process.env.SMTP_USER || config.smtp_user;
+    const rawPass = process.env.SMTP_PASS || config.smtp_pass;
 
-    if (!smtpUser || !smtpPass) {
+    if (!rawUser || !rawPass) {
       console.log("[EMAIL] SMTP credentials not set. Skipping email send.");
       console.log(`[EMAIL] To: ${to}\nSubject: ${subject}`);
-      return;
+      return { skipped: true, reason: "Credentials missing" };
     }
+
+    const smtpUser = String(rawUser).trim();
+    // Remove all spaces in app passwords (common when pasting from Google)
+    const smtpPass = String(rawPass).trim().replace(/\s+/g, '');
 
     console.log(`[EMAIL] Attempting to send email to ${to} using ${smtpUser}...`);
 
-    const transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true, // use SSL
-      auth: {
-        user: smtpUser,
-        pass: smtpPass
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
-    });
+    let transporter;
+    try {
+      transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true, // SSL
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
+      });
 
-    const info = await transporter.sendMail({
-      from: `"Sorella Indumentaria" <${smtpUser}>`,
-      to,
-      subject,
-      html
-    });
+      const info = await transporter.sendMail({
+        from: `"Sorella Indumentaria" <${smtpUser}>`,
+        to,
+        subject,
+        html
+      });
 
-    console.log(`[EMAIL] Email sent to ${to}: ${info.messageId}`);
-    return info;
+      console.log(`[EMAIL] Email sent to ${to} via 465: ${info.messageId}`);
+      return { success: true, messageId: info.messageId };
+    } catch (err465: any) {
+      console.warn("[EMAIL] Port 465 failed, attempting port 587 (TLS):", err465?.message);
+      transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false, // STARTTLS
+        auth: {
+          user: smtpUser,
+          pass: smtpPass
+        },
+        tls: {
+          rejectUnauthorized: false
+        }
+      });
+
+      const info = await transporter.sendMail({
+        from: `"Sorella Indumentaria" <${smtpUser}>`,
+        to,
+        subject,
+        html
+      });
+
+      console.log(`[EMAIL] Email sent to ${to} via 587: ${info.messageId}`);
+      return { success: true, messageId: info.messageId };
+    }
   } catch (error: any) {
-    console.error("[EMAIL] Error sending email:", error);
-    throw error;
+    console.error("[EMAIL] Error sending email:", error?.message || error);
+    return { success: false, error: error?.message || String(error) };
   }
 }
 
@@ -636,110 +682,354 @@ app.post("/api/notify-order", async (req, res) => {
   }
 });
 
-app.get("/api/checkout/success", async (req, res) => {
-  try {
-    const { order_id, payment_id } = req.query;
-    if (order_id) {
-      const order = await updateOrderStatusOnServer(order_id as string, 'Pagado', payment_id as string);
-      if (order) {
-        const orderData = order.data;
+// Helper to build buyer confirmation email with order details and prominent store contact info
+function buildCustomerOrderEmail(orderData: any, paymentId?: string, settings?: any) {
+  const storePhone = settings?.whatsapp_number || '+54 9 11 3509 2612';
+  const cleanPhone = storePhone.replace(/[^0-9]/g, '');
+  const whatsappUrl = settings?.whatsapp_link || `https://wa.me/${cleanPhone}`;
+  const storeEmail = settings?.smtp_user || 'info@sorella.com';
+
+  const itemsHtml = (orderData.items || []).map((item: any) => {
+    let options = [];
+    if (item.selectedSize) options.push(`Talle: ${item.selectedSize}`);
+    if (item.selectedColor) options.push(`Color: ${item.selectedColor}`);
+    if (item.selectedDynamicFilters) {
+      Object.entries(item.selectedDynamicFilters).forEach(([key, value]) => options.push(`${key}: ${value}`));
+    }
+    const optionsStr = options.length > 0 ? ` (${options.join(', ')})` : '';
+    return `
+      <tr style="border-bottom: 1px solid #f1f1f1;">
+        <td style="padding: 12px 8px; font-weight: 500;">${item.name}${optionsStr}</td>
+        <td style="padding: 12px 8px; text-align: center;">x${item.quantity}</td>
+        <td style="padding: 12px 8px; text-align: right; font-weight: bold; color: #111;">$${(Number(item.price || 0) * Number(item.quantity || 1)).toLocaleString()}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <!DOCTYPE html>
+    <html lang="es">
+    <head><meta charset="UTF-8"><title>Confirmación de Pedido</title></head>
+    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #faf6f0; margin: 0; padding: 24px; color: #2d2d2d;">
+      <div style="max-width: 620px; margin: 0 auto; background: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid #f0e6dc;">
+        <div style="background-color: #242220; padding: 32px 24px; text-align: center;">
+          <h1 style="color: #F8D9C8; margin: 0; font-size: 26px; letter-spacing: 1px; font-weight: 800;">SORELLA INDUMENTARIA</h1>
+          <p style="color: #ffffff; margin: 8px 0 0; font-size: 14px; opacity: 0.9;">¡Pago Confirmado y Acreditado!</p>
+        </div>
         
-        // Deduct stock if db is available
-        if (db && orderData.items && Array.isArray(orderData.items)) {
-          for (const item of orderData.items) {
-            try {
-              const productRef = db.collection('products').doc(String(item.id));
-              await db.runTransaction(async (transaction: any) => {
-                const productDoc = await transaction.get(productRef);
-                if (productDoc.exists) {
-                  const currentStock = productDoc.data().stock || 0;
-                  transaction.update(productRef, { stock: Math.max(0, currentStock - item.quantity) });
-                }
-              });
-            } catch (stockErr) {
-              console.warn("[STOCK] Could not deduct stock:", stockErr);
-            }
-          }
-        }
-        
-        const adminEmail = process.env.ADMIN_EMAIL || 'dgmvolpi@gmail.com';
-        const adminWhatsApp = process.env.ADMIN_WHATSAPP;
-        
-        const config = await getServerSettings();
-        const whatsappLink = config.whatsapp_link || `https://wa.me/${process.env.ADMIN_WHATSAPP || '5491122334455'}`;
-        
-        const whatsappButton = `
-          <div style="margin-top: 30px; text-align: center;">
-            <a href="${whatsappLink}" style="display: inline-block; padding: 15px 30px; background-color: #25D366; color: white; text-decoration: none; border-radius: 50px; font-weight: bold; font-family: sans-serif;">
-              Contactar por WhatsApp
-            </a>
+        <div style="padding: 32px 24px;">
+          <h2 style="color: #22C55E; margin-top: 0; font-size: 22px;">¡Gracias por tu compra, ${orderData.customer_name || 'Cliente'}!</h2>
+          <p style="font-size: 15px; line-height: 1.6; color: #555;">Tu pago por Mercado Pago se ha acreditado correctamente y tu pedido ya está siendo preparado en nuestro taller.</p>
+          
+          <div style="background: #fdfaf6; border: 1px solid #fae3d9; border-radius: 14px; padding: 18px; margin: 20px 0;">
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Número de Pedido:</strong> <span style="color: #F27D26; font-weight: bold;">#${orderData.order_number}</span></p>
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Estado:</strong> <span style="background: #dcfce7; color: #15803d; padding: 3px 10px; border-radius: 6px; font-weight: bold; font-size: 13px;">PAGADO</span></p>
+            ${paymentId ? `<p style="margin: 0; font-size: 13px; color: #777;">ID de Pago Mercado Pago: <strong>${paymentId}</strong></p>` : ''}
           </div>
-        `;
 
-        const itemsHtml = orderData.items.map((item: any) => {
-          let options = [];
-          if (item.selectedSize) options.push(`Talle: ${item.selectedSize}`);
-          if (item.selectedColor) options.push(`Color: ${item.selectedColor}`);
-          if (item.selectedDynamicFilters) {
-            Object.entries(item.selectedDynamicFilters).forEach(([key, value]) => options.push(`${key}: ${value}`));
-          }
-          const optionsStr = options.length > 0 ? ` (${options.join(', ')})` : '';
-          return `<li>${item.name}${optionsStr} x ${item.quantity} - $${item.price * item.quantity}</li>`;
-        }).join('');
-        
-        const itemsText = orderData.items.map((item: any) => {
-          let options = [];
-          if (item.selectedSize) options.push(`Talle: ${item.selectedSize}`);
-          if (item.selectedColor) options.push(`Color: ${item.selectedColor}`);
-          if (item.selectedDynamicFilters) {
-            Object.entries(item.selectedDynamicFilters).forEach(([key, value]) => options.push(`${key}: ${value}`));
-          }
-          const optionsStr = options.length > 0 ? ` (${options.join(', ')})` : '';
-          return `- ${item.name}${optionsStr} x ${item.quantity} ($${item.price * item.quantity})`;
-        }).join('\n');
+          <h3 style="font-size: 16px; margin: 24px 0 12px; border-bottom: 2px solid #F8D9C8; padding-bottom: 8px; color: #242220;">Detalle de Productos</h3>
+          <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+            <thead>
+              <tr style="background: #f8f8f8; text-align: left; font-size: 12px; color: #777; text-transform: uppercase;">
+                <th style="padding: 10px 8px;">Producto</th>
+                <th style="padding: 10px 8px; text-align: center;">Cant.</th>
+                <th style="padding: 10px 8px; text-align: right;">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${itemsHtml}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colspan="2" style="padding: 16px 8px 8px; text-align: right; font-weight: bold; font-size: 16px; color: #333;">Total Abonado:</td>
+                <td style="padding: 16px 8px 8px; text-align: right; font-weight: 800; font-size: 20px; color: #F27D26;">$${Number(orderData.total || 0).toLocaleString()}</td>
+              </tr>
+            </tfoot>
+          </table>
 
-        const customerHtml = `
-          <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-            <h1 style="color: #22C55E;">¡Gracias por tu compra, ${orderData.customer_name}!</h1>
-            <p>Tu pedido <strong>#${orderData.order_number}</strong> ha sido pagado correctamente.</p>
-            <div style="background: #f9f9f9; padding: 20px; rounded: 10px;">
-              <h3>Detalles del Pedido:</h3>
-              <ul>${itemsHtml}</ul>
-              <p><strong>Total: $${orderData.total}</strong></p>
+          <div style="margin-top: 24px; padding: 18px; background: #fdfaf6; border-radius: 14px; border: 1px solid #f2ece6; font-size: 14px; line-height: 1.6;">
+            <p style="margin: 0 0 6px;"><strong>Método de Entrega:</strong> ${orderData.shipping_method || 'A convenir'}</p>
+            ${orderData.shipping_method === 'Envio a domicilio' ? `<p style="margin: 0 0 6px;"><strong>Dirección de Envío:</strong> ${orderData.shipping_address || 'No especificada'}</p>` : '<p style="margin: 0 0 6px;"><strong>Modalidad:</strong> Retiro en local / sucursal</p>'}
+            ${orderData.receiver_dni ? `<p style="margin: 0;"><strong>Quien retira/recibe:</strong> ${orderData.receiver_first_name || ''} ${orderData.receiver_last_name || ''} (DNI: ${orderData.receiver_dni})</p>` : ''}
+          </div>
+
+          <!-- Highlighted Store Contact Information -->
+          <div style="margin-top: 30px; padding: 22px; background: #FFF7ED; border: 2px dashed #FDBA74; border-radius: 16px; text-align: center;">
+            <h4 style="margin: 0 0 8px; color: #C2410C; font-size: 17px; font-weight: bold;">¿Dudas o consultas sobre tu pedido?</h4>
+            <p style="margin: 0 0 14px; font-size: 14px; color: #7C2D12; line-height: 1.5;">
+              Nos contactaremos pronto para coordinar la entrega. También puedes escribirnos o llamarnos directamente:
+            </p>
+            <div style="background: #ffffff; padding: 12px; border-radius: 10px; display: inline-block; margin-bottom: 16px; border: 1px solid #fed7aa;">
+              <p style="margin: 0; font-size: 15px; font-weight: bold; color: #1e293b;">
+                📞 Contacto / WhatsApp: <span style="color: #15803d;">${storePhone}</span>
+              </p>
+              <p style="margin: 4px 0 0; font-size: 13px; color: #64748b;">
+                ✉️ Correo: ${storeEmail}
+              </p>
             </div>
-            <p>Método de envío: ${orderData.shipping_method}</p>
-            ${orderData.shipping_method === 'Envio a domicilio' ? `<p>Dirección: ${orderData.shipping_address}</p>` : '<p>Retiro por local.</p>'}
-            <p>Nos contactaremos pronto para coordinar la entrega. Si tienes alguna duda, puedes contactarnos directamente:</p>
-            ${whatsappButton}
+            <div>
+              <a href="${whatsappUrl}" style="display: inline-block; padding: 14px 28px; background-color: #25D366; color: #ffffff; text-decoration: none; border-radius: 50px; font-weight: bold; font-size: 15px; box-shadow: 0 4px 12px rgba(37,211,102,0.3);">
+                💬 Contactar a Sorella por WhatsApp
+              </a>
+            </div>
           </div>
-        `;
-        
-        const adminHtml = `
-          <div style="font-family: sans-serif; color: #333;">
-            <h1>✅ Venta Pagada #${orderData.order_number}</h1>
-            <p>Pedido: <strong>#${orderData.order_number}</strong></p>
-            <p>Cliente: ${orderData.customer_name} (${orderData.customer_email})</p>
-            <p>Teléfono: ${orderData.customer_phone}</p>
-            <h3>Productos:</h3>
-            <ul>${itemsHtml}</ul>
-            <p><strong>Total: $${orderData.total}</strong></p>
-            <p>Método de envío: ${orderData.shipping_method}</p>
-            <p>Dirección: ${orderData.shipping_address}</p>
-            <p>ID de Pago MP: ${payment_id}</p>
-          </div>
-        `;
 
-        const whatsappMessage = `✅ *PAGO CONFIRMADO #${orderData.order_number}*\n\n💰 *Total:* $${orderData.total}\n👤 *Cliente:* ${orderData.customer_name}\n📧 *Email:* ${orderData.customer_email}\n📞 *Tel:* ${orderData.customer_phone}\n\n📦 *Productos:*\n${itemsText}\n\n🚚 *Envío:* ${orderData.shipping_method}\n📍 *Dirección:* ${orderData.shipping_address}\n💳 *ID Pago:* ${payment_id}`;
+          <p style="font-size: 12px; color: #999; text-align: center; margin-top: 30px; line-height: 1.5;">
+            Guarda este correo como comprobante de tu pedido.<br/>
+            © Sorella Indumentaria. Todos los derechos reservados.
+          </p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+}
 
-        await sendEmail(orderData.customer_email, `Sorella - Pago Confirmado #${orderData.order_number}`, customerHtml);
-        await sendEmail(adminEmail, `✅ NUEVA VENTA PAGADA - Pedido #${orderData.order_number}`, adminHtml);
-        await sendWhatsApp(adminWhatsApp || '', whatsappMessage);
+// Unified Payment Success Processor (Updates DB, sends Emails & WhatsApp, deducts stock)
+async function processPaymentSuccess(orderIdentifier: string, paymentId?: string) {
+  console.log(`[PROCESS_PAYMENT_SUCCESS] Processing order: ${orderIdentifier}, paymentId: ${paymentId}`);
+  const order = await updateOrderStatusOnServer(orderIdentifier, 'Pagado', paymentId);
+  if (!order) {
+    console.warn(`[PROCESS_PAYMENT_SUCCESS] Order not found for identifier: ${orderIdentifier}`);
+    return null;
+  }
+
+  const orderData = order.data;
+
+  // Deduct stock if db is available
+  if (db && orderData.items && Array.isArray(orderData.items)) {
+    for (const item of orderData.items) {
+      try {
+        const productRef = db.collection('products').doc(String(item.id));
+        await db.runTransaction(async (transaction: any) => {
+          const productDoc = await transaction.get(productRef);
+          if (productDoc.exists) {
+            const currentStock = productDoc.data().stock || 0;
+            transaction.update(productRef, { stock: Math.max(0, currentStock - item.quantity) });
+          }
+        });
+      } catch (stockErr) {
+        console.warn("[STOCK] Could not deduct stock:", stockErr);
       }
     }
-    res.redirect("/success");
+  }
+
+  const config = await getServerSettings();
+  const adminEmail = process.env.ADMIN_EMAIL || config.smtp_user || 'dgmvolpi@gmail.com';
+  const adminWhatsApp = process.env.ADMIN_WHATSAPP || config.whatsapp_number;
+  const storePhone = config.whatsapp_number || '+54 9 11 3509 2612';
+  const cleanPhone = storePhone.replace(/[^0-9]/g, '');
+  const whatsappLink = config.whatsapp_link || `https://wa.me/${cleanPhone}`;
+
+  const customerHtml = buildCustomerOrderEmail(orderData, paymentId, config);
+
+  const itemsText = (orderData.items || []).map((item: any) => {
+    let options = [];
+    if (item.selectedSize) options.push(`Talle: ${item.selectedSize}`);
+    if (item.selectedColor) options.push(`Color: ${item.selectedColor}`);
+    if (item.selectedDynamicFilters) {
+      Object.entries(item.selectedDynamicFilters).forEach(([key, value]) => options.push(`${key}: ${value}`));
+    }
+    const optionsStr = options.length > 0 ? ` (${options.join(', ')})` : '';
+    return `- ${item.name}${optionsStr} x ${item.quantity} ($${item.price * item.quantity})`;
+  }).join('\n');
+
+  const adminHtml = `
+    <div style="font-family: sans-serif; color: #333; max-width: 600px;">
+      <h1 style="color: #22C55E;">✅ Venta Pagada #${orderData.order_number}</h1>
+      <p>Pedido: <strong>#${orderData.order_number}</strong></p>
+      <p>Cliente: <strong>${orderData.customer_name}</strong> (${orderData.customer_email})</p>
+      <p>Teléfono: <strong>${orderData.customer_phone}</strong></p>
+      <p>Total Abonado: <strong>$${orderData.total}</strong></p>
+      <p>Método de Envío: <strong>${orderData.shipping_method}</strong></p>
+      <p>Dirección: <strong>${orderData.shipping_address || 'Retiro en local'}</strong></p>
+      ${orderData.receiver_dni ? `<p>DNI Receptor: <strong>${orderData.receiver_dni}</strong> (${orderData.receiver_first_name} ${orderData.receiver_last_name})</p>` : ''}
+      <p>ID de Pago MP: <strong>${paymentId || orderData.payment_id || 'N/A'}</strong></p>
+      <h3>Productos:</h3>
+      <pre style="background: #f4f4f4; padding: 12px; border-radius: 8px;">${itemsText}</pre>
+    </div>
+  `;
+
+  const whatsappMessage = `✅ *PAGO CONFIRMADO #${orderData.order_number}*\n\n💰 *Total:* $${orderData.total}\n👤 *Cliente:* ${orderData.customer_name}\n📧 *Email:* ${orderData.customer_email}\n📞 *Tel:* ${orderData.customer_phone}\n\n📦 *Productos:*\n${itemsText}\n\n🚚 *Envío:* ${orderData.shipping_method}\n📍 *Dirección:* ${orderData.shipping_address || 'Retiro en local'}\n💳 *ID Pago MP:* ${paymentId || 'N/A'}`;
+
+  // Fire emails and WhatsApp without blocking response
+  try {
+    if (orderData.customer_email) {
+      console.log(`[PROCESS_PAYMENT_SUCCESS] Sending confirmation email to buyer: ${orderData.customer_email}`);
+      await sendEmail(orderData.customer_email, `Sorella - Pago Confirmado y Detalle de Pedido #${orderData.order_number}`, customerHtml);
+    }
+  } catch (err: any) {
+    console.error("[PROCESS_PAYMENT_SUCCESS] Customer email failed:", err?.message);
+  }
+
+  try {
+    if (adminEmail) {
+      console.log(`[PROCESS_PAYMENT_SUCCESS] Sending notification email to admin: ${adminEmail}`);
+      await sendEmail(adminEmail, `✅ NUEVA VENTA PAGADA - Pedido #${orderData.order_number}`, adminHtml);
+    }
+  } catch (err: any) {
+    console.error("[PROCESS_PAYMENT_SUCCESS] Admin email failed:", err?.message);
+  }
+
+  try {
+    await sendWhatsApp(adminWhatsApp || '', whatsappMessage);
+  } catch (err: any) {
+    console.error("[PROCESS_PAYMENT_SUCCESS] WhatsApp failed:", err?.message);
+  }
+
+  return order;
+}
+
+// GET Success redirect from Mercado Pago
+app.get("/api/checkout/success", async (req, res) => {
+  try {
+    const order_id = (req.query.order_id || req.query.external_reference) as string;
+    const payment_id = (req.query.payment_id || req.query.collection_id) as string;
+    console.log(`[CHECKOUT_SUCCESS] Redirect received with order_id=${order_id}, payment_id=${payment_id}`);
+
+    if (order_id) {
+      await processPaymentSuccess(order_id, payment_id);
+    }
+
+    res.redirect(`/success?order_id=${encodeURIComponent(order_id || '')}&payment_id=${encodeURIComponent(payment_id || '')}&status=approved`);
   } catch (err) {
-    console.error(err);
+    console.error("[CHECKOUT_SUCCESS] Error:", err);
     res.redirect("/success");
+  }
+});
+
+// POST to confirm payment from Client (e.g. SuccessPage or Admin panel)
+app.post("/api/checkout/confirm-order", async (req, res) => {
+  try {
+    const { order_number, payment_id } = req.body;
+    if (!order_number) {
+      return res.status(400).json({ error: "order_number is required" });
+    }
+    const order = await processPaymentSuccess(order_number, payment_id);
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+    res.json({ success: true, order: order.data });
+  } catch (err: any) {
+    console.error("[CONFIRM_ORDER] Error:", err);
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// POST to send/resend email directly from Admin Sales panel
+app.post("/api/admin/send-order-email", async (req, res) => {
+  try {
+    const { order_number, customer_email, type, custom_message } = req.body;
+    if (!order_number) {
+      return res.status(400).json({ error: "order_number is required" });
+    }
+
+    const order = await findOrderByNumber(order_number);
+    if (!order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    const orderData = order.data;
+    const targetEmail = (customer_email || orderData.customer_email || '').trim();
+    if (!targetEmail) {
+      return res.status(400).json({ error: "Customer email is missing" });
+    }
+
+    const config = await getServerSettings();
+    const storePhone = config.whatsapp_number || '+54 9 11 3509 2612';
+    const storeEmail = config.smtp_user || 'info@sorella.com';
+
+    let html = '';
+    let subject = '';
+
+    if (type === 'delivery') {
+      subject = `Sorella - Remito de Entrega - Pedido #${orderData.order_number}`;
+      html = `
+        <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 12px;">
+          <h2 style="color: #242220; margin-top: 0;">SORELLA INDUMENTARIA - REMITO DE ENTREGA</h2>
+          <p><strong>Pedido:</strong> #${orderData.order_number}</p>
+          <p><strong>Destinatario:</strong> ${orderData.receiver_first_name || ''} ${orderData.receiver_last_name || ''} (${orderData.customer_name})</p>
+          <p><strong>DNI:</strong> ${orderData.receiver_dni || 'N/A'}</p>
+          <p><strong>Dirección:</strong> ${orderData.shipping_address || 'Retiro en sucursal'}</p>
+          <p><strong>Método de Envío:</strong> ${orderData.shipping_method}</p>
+          <p><strong>Teléfono:</strong> ${orderData.customer_phone}</p>
+          <p><strong>Estado:</strong> ${orderData.status || 'Pagado'}</p>
+          <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
+          <p><strong>Contacto de la tienda:</strong> WhatsApp: ${storePhone} | Email: ${storeEmail}</p>
+          ${custom_message ? `<div style="background: #f9f9f9; padding: 12px; border-radius: 8px; margin-top: 15px;"><strong>Mensaje adicional:</strong><br/>${custom_message}</div>` : ''}
+        </div>
+      `;
+    } else {
+      subject = `Sorella - Detalle y Comprobante de Pedido #${orderData.order_number}`;
+      html = buildCustomerOrderEmail(orderData, orderData.payment_id, config);
+      if (custom_message) {
+        html = html.replace('</h2>', `</h2><div style="background: #fff3cd; padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #ffeeba; color: #856404;"><strong>Nota de la tienda:</strong> ${custom_message}</div>`);
+      }
+    }
+
+    const emailResult = await sendEmail(targetEmail, subject, html);
+    res.json({ success: true, emailResult, message: `Correo enviado exitosamente a ${targetEmail}` });
+  } catch (err: any) {
+    console.error("[ADMIN_SEND_ORDER_EMAIL] Error:", err);
+    res.status(500).json({ error: err?.message || String(err) });
+  }
+});
+
+// POST to test SMTP settings from Admin Config
+app.post("/api/admin/test-email", async (req, res) => {
+  try {
+    const config = await getServerSettings(true);
+    const smtpUser = (req.body?.smtp_user || config.smtp_user || '').trim();
+    const smtpPass = (req.body?.smtp_pass || config.smtp_pass || '').trim().replace(/\s+/g, '');
+    const toEmail = (req.body?.to_email || req.body?.email || smtpUser || 'dgmvolpi@gmail.com').trim();
+
+    if (!smtpUser || !smtpPass) {
+      return res.status(400).json({ error: "Faltan las credenciales SMTP (usuario o contraseña de aplicación)" });
+    }
+
+    console.log(`[TEST_EMAIL] Testing SMTP for user: ${smtpUser} to: ${toEmail}...`);
+
+    let transporter;
+    try {
+      transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        auth: { user: smtpUser, pass: smtpPass },
+        tls: { rejectUnauthorized: false }
+      });
+      await transporter.verify();
+    } catch (e465: any) {
+      console.warn("[TEST_EMAIL] Port 465 failed, trying 587:", e465?.message);
+      transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        auth: { user: smtpUser, pass: smtpPass },
+        tls: { rejectUnauthorized: false }
+      });
+      await transporter.verify();
+    }
+
+    const testHtml = `
+      <div style="font-family: sans-serif; padding: 20px; color: #333;">
+        <h2 style="color: #22C55E;">✅ Prueba de Correo Exitosa</h2>
+        <p>Tu configuración de correo SMTP en Sorella Indumentaria está funcionando correctamente.</p>
+        <p>Fecha y Hora: ${new Date().toLocaleString()}</p>
+      </div>
+    `;
+
+    const info = await transporter.sendMail({
+      from: `"Sorella Indumentaria" <${smtpUser}>`,
+      to: toEmail,
+      subject: "Sorella - Prueba de Configuración de Correo Exitosa",
+      html: testHtml
+    });
+
+    res.json({ success: true, message: `Correo de prueba enviado con éxito a ${toEmail}`, messageId: info.messageId });
+  } catch (err: any) {
+    console.error("[TEST_EMAIL] Error:", err);
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
 

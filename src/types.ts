@@ -127,6 +127,8 @@ export interface Order {
   total: number;
   items: any[];
   status: string;
+  payment_id?: string;
+  payment_method?: string;
   created_at?: string;
 }
 
