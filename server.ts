@@ -7,6 +7,17 @@ import { MercadoPagoConfig, Preference } from 'mercadopago';
 import nodemailer from 'nodemailer';
 import admin from 'firebase-admin';
 import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp as initClientApp, getApps as getClientApps } from 'firebase/app';
+import { 
+  getFirestore as getClientFirestore, 
+  collection as clientCollection, 
+  getDocs as getClientDocs,
+  doc as clientDoc,
+  getDoc as getClientDoc,
+  updateDoc as clientUpdateDoc,
+  query as clientQuery,
+  where as clientWhere
+} from 'firebase/firestore';
 import fs from 'fs';
 
 dotenv.config();
@@ -24,6 +35,20 @@ try {
   }
 } catch (e) {
   console.warn("[SERVER] Could not load firebase-applet-config.json, relying on env vars.");
+}
+
+// Initialize Firebase Client SDK (uses API Key, no Service Account needed)
+let clientDb: any = null;
+try {
+  if (firebaseConfig.apiKey && firebaseConfig.projectId) {
+    const clientApp = getClientApps().length === 0 
+      ? initClientApp(firebaseConfig, 'server-client-app')
+      : getClientApps()[0];
+    clientDb = getClientFirestore(clientApp, firebaseConfig.firestoreDatabaseId);
+    console.log("[SERVER] Firebase Client SDK initialized successfully.");
+  }
+} catch (e: any) {
+  console.error("[SERVER] Error initializing Firebase Client SDK:", e?.message);
 }
 
 // Initialize Firebase Admin
@@ -64,40 +89,128 @@ if (admin.apps.length > 0) {
   }
 }
 
-// Helper to get settings
-async function getServerSettings() {
-  if (!db) {
-    console.error("[SERVER] Firestore not initialized");
-    return {};
+// Cache settings in memory with short TTL
+let cachedSettings: any = null;
+let lastSettingsFetch = 0;
+const SETTINGS_CACHE_TTL = 15000; // 15 seconds
+
+// Helper to get settings - uses Client SDK first (reliable without service account), then Admin SDK
+async function getServerSettings(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && cachedSettings && (now - lastSettingsFetch < SETTINGS_CACHE_TTL)) {
+    return cachedSettings;
   }
-  try {
-    const settingsSnap = await db.collection('settings').get();
-    const config: any = {};
-    settingsSnap.forEach(doc => {
-      config[doc.id] = doc.data().value;
-    });
-    return config;
-  } catch (e: any) {
-    // If we get a NOT_FOUND error (code 5), it might be because the named database doesn't exist
-    if (e.code === 5 || (e.message && e.message.includes('NOT_FOUND'))) {
-      console.warn("[SERVER] Firestore database or collection not found. Attempting fallback to default database.");
-      try {
-        const fallbackDb = getFirestore('(default)');
-        const settingsSnap = await fallbackDb.collection('settings').get();
-        const config: any = {};
-        settingsSnap.forEach(doc => {
-          config[doc.id] = doc.data().value;
-        });
-        // If successful, update the global db instance to use the fallback
-        db = fallbackDb;
+
+  // Priority 1: Firebase Client SDK (uses API Key, works without service account credentials)
+  if (clientDb) {
+    try {
+      const snap = await getClientDocs(clientCollection(clientDb, 'settings'));
+      const config: any = {};
+      snap.docs.forEach((d: any) => {
+        config[d.id] = d.data()?.value;
+      });
+      if (Object.keys(config).length > 0) {
+        cachedSettings = config;
+        lastSettingsFetch = now;
         return config;
-      } catch (fallbackError) {
-        console.error("[SERVER] Fallback also failed:", fallbackError);
       }
+    } catch (clientErr: any) {
+      console.warn("[SERVER] Client SDK failed to fetch settings:", clientErr?.message);
     }
-    console.error("[SERVER] Error fetching settings:", e);
-    return {};
   }
+
+  // Priority 2: Firebase Admin SDK
+  if (db) {
+    try {
+      const settingsSnap = await db.collection('settings').get();
+      const config: any = {};
+      settingsSnap.forEach((doc: any) => {
+        config[doc.id] = doc.data()?.value;
+      });
+      if (Object.keys(config).length > 0) {
+        cachedSettings = config;
+        lastSettingsFetch = now;
+        return config;
+      }
+    } catch (e: any) {
+      // If we get a NOT_FOUND error (code 5), fallback to default database
+      if (e.code === 5 || (e.message && e.message.includes('NOT_FOUND'))) {
+        try {
+          const fallbackDb = getFirestore('(default)');
+          const settingsSnap = await fallbackDb.collection('settings').get();
+          const config: any = {};
+          settingsSnap.forEach((doc: any) => {
+            config[doc.id] = doc.data()?.value;
+          });
+          db = fallbackDb;
+          cachedSettings = config;
+          lastSettingsFetch = now;
+          return config;
+        } catch (fallbackError) {
+          console.error("[SERVER] Fallback also failed:", fallbackError);
+        }
+      }
+      console.warn("[SERVER] Admin SDK failed to fetch settings:", e?.message);
+    }
+  }
+
+  return cachedSettings || {};
+}
+
+// Helpers for order management across Client SDK and Admin SDK
+async function findOrderByNumber(orderNumber: string): Promise<{ id: string; data: any; ref?: any } | null> {
+  if (clientDb) {
+    try {
+      const q = clientQuery(clientCollection(clientDb, 'orders'), clientWhere('order_number', '==', orderNumber));
+      const snap = await getClientDocs(q);
+      if (!snap.empty) {
+        return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+      }
+    } catch (e: any) {
+      console.warn("[SERVER] Client SDK findOrderByNumber failed:", e?.message);
+    }
+  }
+
+  if (db) {
+    try {
+      const snap = await db.collection('orders').where('order_number', '==', orderNumber).get();
+      if (!snap.empty) {
+        return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+      }
+    } catch (e: any) {
+      console.warn("[SERVER] Admin SDK findOrderByNumber failed:", e?.message);
+    }
+  }
+
+  return null;
+}
+
+async function updateOrderStatusOnServer(orderNumber: string, status: string, paymentId?: string) {
+  const order = await findOrderByNumber(orderNumber);
+  if (!order) return null;
+
+  const updateFields: any = { status };
+  if (paymentId) updateFields.payment_id = String(paymentId);
+
+  if (clientDb) {
+    try {
+      await clientUpdateDoc(clientDoc(clientDb, 'orders', order.id), updateFields);
+      return { ...order, data: { ...order.data, ...updateFields } };
+    } catch (e: any) {
+      console.warn("[SERVER] Client SDK updateOrderStatus failed:", e?.message);
+    }
+  }
+
+  if (db) {
+    try {
+      await db.collection('orders').doc(order.id).update(updateFields);
+      return { ...order, data: { ...order.data, ...updateFields } };
+    } catch (e: any) {
+      console.warn("[SERVER] Admin SDK updateOrderStatus failed:", e?.message);
+    }
+  }
+
+  return order;
 }
 
 // Initialize settings and handle Firestore fallback at startup
@@ -188,11 +301,18 @@ app.use((req, res, next) => {
 
 // API Routes (Only those that need server-side secrets)
 
-// Mercado Pago Preference Creation
-app.get("/api/admin/test-mercadopago", async (req, res) => {
+// Mercado Pago Connection Test (Supports GET and POST with body accessToken)
+const testMercadoPagoHandler = async (req: express.Request, res: express.Response) => {
   try {
-    const config = await getServerSettings();
-    const accessToken = (config.mercadopago_access_token || '').trim();
+    const bodyToken = req.body?.accessToken;
+    const config = await getServerSettings(true);
+    const accessToken = (
+      bodyToken ||
+      process.env.MERCADOPAGO_ACCESS_TOKEN ||
+      process.env.MP_ACCESS_TOKEN ||
+      config.mercadopago_access_token ||
+      ''
+    ).trim();
     
     if (!accessToken) {
       return res.status(400).json({ status: 'error', message: 'Access Token no configurado' });
@@ -204,25 +324,36 @@ app.get("/api/admin/test-mercadopago", async (req, res) => {
 
     const data = await response.json();
     if (response.ok) {
-      res.json({ status: 'ok', message: 'Conexión exitosa', user: data.nickname });
+      const userName = data.nickname || data.first_name || 'Vendedor';
+      res.json({ 
+        status: 'ok', 
+        message: 'Conexión exitosa', 
+        user: userName,
+        email: data.email,
+        site_id: data.site_id 
+      });
     } else {
-      res.status(response.status).json({ status: 'error', message: data.message || 'Error de conexión' });
+      res.status(response.status).json({ 
+        status: 'error', 
+        message: data.message || `Error ${response.status} de Mercado Pago` 
+      });
     }
   } catch (err: any) {
     res.status(500).json({ status: 'error', message: err.message });
   }
-});
+};
+
+app.get("/api/admin/test-mercadopago", testMercadoPagoHandler);
+app.post("/api/admin/test-mercadopago", testMercadoPagoHandler);
 
 app.get("/api/checkout/retry/:order_number", async (req, res) => {
   const { order_number } = req.params;
   console.log(`[RETRY] Request received for order: ${order_number}`);
   
   try {
-    if (!db) throw new Error("Database not initialized");
-
-    const snapshot = await db.collection('orders').where('order_number', '==', order_number).get();
+    const order = await findOrderByNumber(order_number);
     
-    if (snapshot.empty) {
+    if (!order) {
       console.error(`[RETRY] Order not found: ${order_number}`);
       if (req.headers.accept?.includes('application/json')) {
         return res.status(404).json({ error: "Pedido no encontrado" });
@@ -230,15 +361,15 @@ app.get("/api/checkout/retry/:order_number", async (req, res) => {
       return res.status(404).send("Pedido no encontrado");
     }
     
-    const orderData = snapshot.docs[0].data();
+    const orderData = order.data;
     console.log(`[RETRY] Order found. Status: ${orderData.status}, Total: ${orderData.total}`);
     
-    const config = await getServerSettings();
+    const config = await getServerSettings(true);
     const accessToken = (process.env.MERCADOPAGO_ACCESS_TOKEN || process.env.MP_ACCESS_TOKEN || config.mercadopago_access_token || '').trim();
     
     if (!accessToken) {
       console.error("[RETRY] Mercado Pago access token missing");
-      const errorMsg = "Mercado Pago no está configurado. Por favor configure el Access Token en las variables de entorno o en el panel.";
+      const errorMsg = "Mercado Pago no está configurado. Por favor configure el Access Token en el panel.";
       if (req.headers.accept?.includes('application/json')) {
         return res.status(400).json({ error: errorMsg });
       }
@@ -254,7 +385,7 @@ app.get("/api/checkout/retry/:order_number", async (req, res) => {
 
     const result = await preference.create({
       body: {
-        items: orderData.items.map((item: any) => ({
+        items: (orderData.items || []).map((item: any) => ({
           id: String(item.id || 'item'),
           title: String(item.name || 'Producto').substring(0, 250),
           unit_price: Number(item.price || 0),
@@ -300,14 +431,20 @@ app.get("/api/checkout/retry/:order_number", async (req, res) => {
 
 app.post("/api/checkout/mercadopago", async (req, res) => {
   try {
-    const { items, orderData } = req.body;
+    const { items, orderData, accessToken: bodyAccessToken } = req.body;
     
-    const config = await getServerSettings();
-    const accessToken = (process.env.MERCADOPAGO_ACCESS_TOKEN || process.env.MP_ACCESS_TOKEN || config.mercadopago_access_token || '').trim();
+    const config = await getServerSettings(true);
+    const accessToken = (
+      bodyAccessToken ||
+      process.env.MERCADOPAGO_ACCESS_TOKEN ||
+      process.env.MP_ACCESS_TOKEN ||
+      config.mercadopago_access_token ||
+      ''
+    ).trim();
     
     if (!accessToken) {
       console.error("[MP] Mercado Pago access token missing");
-      return res.status(400).json({ error: "Mercado Pago no está configurado. Verifique el Access Token en las variables de entorno." });
+      return res.status(400).json({ error: "Mercado Pago no está configurado. Verifique el Access Token en el panel de administración." });
     }
 
     const client = new MercadoPagoConfig({ accessToken });
@@ -502,27 +639,27 @@ app.post("/api/notify-order", async (req, res) => {
 app.get("/api/checkout/success", async (req, res) => {
   try {
     const { order_id, payment_id } = req.query;
-    if (order_id && db) {
-      const snapshot = await db.collection('orders').where('order_number', '==', order_id).get();
-      if (!snapshot.empty) {
-        const orderDoc = snapshot.docs[0];
-        await orderDoc.ref.update({ 
-          status: 'Pagado', 
-          payment_id: payment_id as string 
-        });
+    if (order_id) {
+      const order = await updateOrderStatusOnServer(order_id as string, 'Pagado', payment_id as string);
+      if (order) {
+        const orderData = order.data;
         
-        const orderData = orderDoc.data();
-        
-        // Deduct stock
-        for (const item of orderData.items) {
-          const productRef = db.collection('products').doc(String(item.id));
-          await db.runTransaction(async (transaction: any) => {
-            const productDoc = await transaction.get(productRef);
-            if (productDoc.exists) {
-              const currentStock = productDoc.data().stock || 0;
-              transaction.update(productRef, { stock: Math.max(0, currentStock - item.quantity) });
+        // Deduct stock if db is available
+        if (db && orderData.items && Array.isArray(orderData.items)) {
+          for (const item of orderData.items) {
+            try {
+              const productRef = db.collection('products').doc(String(item.id));
+              await db.runTransaction(async (transaction: any) => {
+                const productDoc = await transaction.get(productRef);
+                if (productDoc.exists) {
+                  const currentStock = productDoc.data().stock || 0;
+                  transaction.update(productRef, { stock: Math.max(0, currentStock - item.quantity) });
+                }
+              });
+            } catch (stockErr) {
+              console.warn("[STOCK] Could not deduct stock:", stockErr);
             }
-          });
+          }
         }
         
         const adminEmail = process.env.ADMIN_EMAIL || 'dgmvolpi@gmail.com';
@@ -609,13 +746,10 @@ app.get("/api/checkout/success", async (req, res) => {
 app.get("/api/checkout/failure", async (req, res) => {
   try {
     const { order_id } = req.query;
-    if (order_id && db) {
-      const snapshot = await db.collection('orders').where('order_number', '==', order_id).get();
-      if (!snapshot.empty) {
-        const orderDoc = snapshot.docs[0];
-        await orderDoc.ref.update({ status: 'Pago fallido' });
-        
-        const orderData = orderDoc.data();
+    if (order_id) {
+      const order = await updateOrderStatusOnServer(order_id as string, 'Pago fallido');
+      if (order) {
+        const orderData = order.data;
         const adminEmail = process.env.ADMIN_EMAIL || 'dgmvolpi@gmail.com';
         const adminWhatsApp = process.env.ADMIN_WHATSAPP;
 
@@ -637,7 +771,7 @@ app.get("/api/checkout/failure", async (req, res) => {
             <p>Tu pedido <strong>#${orderData.order_number}</strong> no pudo ser procesado correctamente.</p>
             <p>Puedes intentar realizar el pago nuevamente haciendo clic en el siguiente enlace:</p>
             <div style="text-align: center; margin: 20px 0;">
-              <a href="${req.headers.origin}/api/checkout/retry/${orderData.order_number}" style="display: inline-block; padding: 15px 30px; background-color: #F27D26; color: white; text-decoration: none; border-radius: 50px; font-weight: bold;">Reintentar Pago</a>
+              <a href="${req.headers.origin || ''}/api/checkout/retry/${orderData.order_number}" style="display: inline-block; padding: 15px 30px; background-color: #F27D26; color: white; text-decoration: none; border-radius: 50px; font-weight: bold;">Reintentar Pago</a>
             </div>
             <p>O puedes ir a tu perfil en la tienda para ver tus pedidos.</p>
             <p>Si crees que esto es un error o necesitas ayuda, contáctanos:</p>
@@ -670,13 +804,10 @@ app.get("/api/checkout/failure", async (req, res) => {
 app.get("/api/checkout/pending", async (req, res) => {
   try {
     const { order_id } = req.query;
-    if (order_id && db) {
-      const snapshot = await db.collection('orders').where('order_number', '==', order_id).get();
-      if (!snapshot.empty) {
-        const orderDoc = snapshot.docs[0];
-        await orderDoc.ref.update({ status: 'Pendiente de pago' });
-        
-        const orderData = orderDoc.data();
+    if (order_id) {
+      const order = await updateOrderStatusOnServer(order_id as string, 'Pendiente de pago');
+      if (order) {
+        const orderData = order.data;
         const adminEmail = process.env.ADMIN_EMAIL || 'dgmvolpi@gmail.com';
         const adminWhatsApp = process.env.ADMIN_WHATSAPP;
 

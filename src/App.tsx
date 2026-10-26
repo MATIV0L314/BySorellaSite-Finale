@@ -8,7 +8,7 @@ import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { Product, Settings, Category, Banner, Order, Coupon, UserProfile, Filter, Review, WishlistItem } from './types';
 import AppCursor from './CustomCursor';
 import { translations, Language } from './translations';
-import { auth, signInWithGoogle, logout, db, saveUserProfile, createOrder, deleteOrder, createBuyerUser, getUserProfile, loginWithEmail, registerWithEmail, getProducts, saveProduct, deleteProduct, getCategories, saveCategory, deleteCategory, getBanners, saveBanner, deleteBanner, getSettings, saveSettings, updateOrderStatus, getUsers, updateUserRole, requestAdminAccess, getAdminRequests, updateAdminRequestStatus, getAdminRequestByEmail, getCoupons, saveCoupon, deleteCoupon, getFilters, saveFilter, deleteFilter, getReviews, addReview, getWishlist, addToWishlist, removeFromWishlist } from './firebase';
+import { auth, signInWithGoogle, logout, db, saveUserProfile, createOrder, deleteOrder, createBuyerUser, getUserProfile, loginWithEmail, registerWithEmail, getProducts, saveProduct, deleteProduct, getCategories, saveCategory, deleteCategory, getBanners, saveBanner, deleteBanner, getSettings, saveSettings, updateOrderStatus, getUsers, updateUserRole, requestAdminAccess, getAdminRequests, updateAdminRequestStatus, getAdminRequestByEmail, getCoupons, saveCoupon, deleteCoupon, getFilters, saveFilter, deleteFilter, getReviews, addReview, getWishlist, addToWishlist, removeFromWishlist, cleanFirestoreData } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query, orderBy, onSnapshot, where } from 'firebase/firestore';
 import { initMercadoPago, Wallet, Payment } from '@mercadopago/sdk-react';
@@ -6170,11 +6170,19 @@ function AppContent() {
                               <button 
                                 onClick={async () => {
                                   try {
-                                    const res = await fetch('/api/admin/test-mercadopago');
+                                    const res = await fetch('/api/admin/test-mercadopago', {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ accessToken: settings?.mercadopago_access_token })
+                                    });
                                     const text = await res.text();
                                     try {
                                       const data = JSON.parse(text);
-                                      alert(data.status === 'ok' ? `¡Conexión exitosa! Usuario: ${data.user}` : `Error: ${data.message}`);
+                                      if (data.status === 'ok') {
+                                        alert(`¡Conexión exitosa con Mercado Pago!\nCuenta vinculada: ${data.user}${data.email ? ' (' + data.email + ')' : ''}`);
+                                      } else {
+                                        alert(`Error: ${data.message || 'No se pudo conectar con Mercado Pago'}`);
+                                      }
                                     } catch (e) {
                                       console.error("Server response was not JSON:", text);
                                       alert(`Error del servidor: ${text.substring(0, 100)}`);
@@ -8324,16 +8332,16 @@ const CheckoutPage = ({ cart, user, t, apiStatus, settings, coupons, filters, on
 
       const orderData = {
         order_number: `ORD-${Date.now()}`,
-        customer_email: customerEmail,
-        customer_name: customerName,
-        customer_phone: formData.phone,
-        shipping_address: shippingMethod === 'Envio a domicilio' ? `${formData.address}, ${formData.city}` : 'Retiro en local',
+        customer_email: customerEmail || '',
+        customer_name: customerName || '',
+        customer_phone: formData.phone || '',
+        shipping_address: shippingMethod === 'Envio a domicilio' ? `${formData.address || ''}, ${formData.city || ''}` : 'Retiro en local',
         shipping_method: shippingMethod,
-        receiver_dni: formData.receiverDni,
-        receiver_first_name: formData.receiverFirstName,
-        receiver_last_name: formData.receiverLastName,
+        receiver_dni: formData.receiverDni || '',
+        receiver_first_name: formData.receiverFirstName || '',
+        receiver_last_name: formData.receiverLastName || '',
         total,
-        items: itemsWithFilterNames,
+        items: itemsWithFilterNames.map(item => cleanFirestoreData(item)),
         status: apiStatus.mercadopago ? 'Pendiente de pago' : 'En proceso'
       };
 
@@ -8342,11 +8350,11 @@ const CheckoutPage = ({ cart, user, t, apiStatus, settings, coupons, filters, on
         console.log("Creating buyer record for guest...");
         try {
           await createBuyerUser({
-            displayName: customerName,
-            email: customerEmail,
-            phone: formData.phone,
-            address: formData.address,
-            city: formData.city
+            displayName: customerName || '',
+            email: customerEmail || '',
+            phone: formData.phone || '',
+            address: formData.address || '',
+            city: formData.city || ''
           });
         } catch (e) {
           console.error("Error creating buyer record:", e);
@@ -8364,7 +8372,11 @@ const CheckoutPage = ({ cart, user, t, apiStatus, settings, coupons, filters, on
           const mpRes = await fetch('/api/checkout/mercadopago', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: cart, orderData })
+            body: JSON.stringify({ 
+              items: cart, 
+              orderData,
+              accessToken: settings?.mercadopago_access_token 
+            })
           });
           
           const responseText = await mpRes.text();

@@ -154,14 +154,40 @@ export const getUserProfile = async (uid: string) => {
   }
 };
 
+// Recursively removes undefined fields so Firestore addDoc/setDoc never throws 'Unsupported field value: undefined'
+export const cleanFirestoreData = (data: any): any => {
+  if (data === undefined) return null;
+  if (data === null || typeof data !== 'object') return data;
+  if (data instanceof Date) return data;
+  if (typeof data === 'object' && ('_methodName' in data || (data as any)?.constructor?.name === 'FieldValue')) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .map(item => cleanFirestoreData(item))
+      .filter(item => item !== undefined);
+  }
+  const clean: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) {
+      const cleanedVal = cleanFirestoreData(value);
+      if (cleanedVal !== undefined) {
+        clean[key] = cleanedVal;
+      }
+    }
+  }
+  return clean;
+};
+
 export const createOrder = async (orderData: any) => {
   try {
     const ordersRef = collection(db, 'orders');
-    return await addDoc(ordersRef, {
+    const cleaned = cleanFirestoreData({
       ...orderData,
       created_at: new Date().toISOString(),
       status: orderData.status || 'pending'
     });
+    return await addDoc(ordersRef, cleaned);
   } catch (err) {
     handleFirestoreError(err, 'add', 'orders');
   }
@@ -182,11 +208,12 @@ export const createBuyerUser = async (userData: any) => {
     const q = query(buyersRef, where('email', '==', userData.email));
     const snap = await getDocs(q);
     if (snap.empty) {
-      return await addDoc(buyersRef, {
+      const cleanedBuyer = cleanFirestoreData({
         ...userData,
         role: 'buyer',
         createdAt: serverTimestamp()
       });
+      return await addDoc(buyersRef, cleanedBuyer);
     }
     return snap.docs[0].ref;
   } catch (err) {
