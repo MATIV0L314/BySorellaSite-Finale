@@ -139,16 +139,29 @@ export const saveUserProfile = async (uid: string, data: any) => {
   try {
     const userRef = doc(db, 'users', uid);
     await setDoc(userRef, data, { merge: true });
+    localStorage.removeItem(`sorella_profile_${uid}`);
+    localStorage.removeItem(`sorella_profile_${uid}_time`);
   } catch (err) {
     handleFirestoreError(err, 'set', `users/${uid}`);
   }
 };
 
 export const getUserProfile = async (uid: string) => {
+  const cacheKey = `sorella_profile_${uid}`;
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const userRef = doc(db, 'users', uid);
     const snap = await getDoc(userRef);
-    return snap.exists() ? snap.data() : null;
+    const data = snap.exists() ? snap.data() : null;
+    if (data) {
+      localStorage.setItem(cacheKey, JSON.stringify(data));
+      localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    }
+    return data;
   } catch (err) {
     handleFirestoreError(err, 'get', `users/${uid}`);
   }
@@ -236,14 +249,22 @@ export const getUserOrders = async (email: string) => {
 
 // Store Entities
 export const getProducts = async () => {
+  const cacheKey = 'sorella_products';
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const snap = await getDocs(query(collection(db, 'products'), orderBy('created_at', 'desc')));
-    return snap.docs.map(doc => {
-      const data = doc.data();
-      // Ensure categories is always an array
-      const categories = Array.isArray(data.categories) ? data.categories : (data.category ? [data.category] : []);
-      return { id: doc.id, ...data, categories };
+    const data = snap.docs.map(doc => {
+      const d = doc.data();
+      const categories = Array.isArray(d.categories) ? d.categories : (d.category ? [d.category] : []);
+      return { id: doc.id, ...d, categories };
     });
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', 'products'); }
 };
 
@@ -252,30 +273,44 @@ export const saveProduct = async (id: string | null, data: any) => {
     const cleanData = Object.fromEntries(
       Object.entries(data).filter(([key, value]) => value !== undefined && key !== 'id')
     );
-    // Ensure categories is an array
     if (cleanData.categories && !Array.isArray(cleanData.categories)) {
       cleanData.categories = [cleanData.categories];
     }
     if (id) {
       await setDoc(doc(db, 'products', id), cleanData, { merge: true });
-      return id;
     } else {
       const res = await addDoc(collection(db, 'products'), { ...cleanData, created_at: serverTimestamp() });
-      return res.id;
+      id = res.id;
     }
+    localStorage.removeItem('sorella_products');
+    localStorage.removeItem('sorella_products_time');
+    return id;
   } catch (err) { handleFirestoreError(err, 'save', 'products'); }
 };
 
 export const deleteProduct = async (id: string) => {
-  try { await deleteDoc(doc(db, 'products', id)); }
+  try { 
+    await deleteDoc(doc(db, 'products', id));
+    localStorage.removeItem('sorella_products');
+    localStorage.removeItem('sorella_products_time');
+  }
   catch (err) { handleFirestoreError(err, 'delete', `products/${id}`); }
 };
 
 // Coupons
 export const getCoupons = async () => {
+  const cacheKey = 'sorella_coupons';
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const snap = await getDocs(collection(db, 'coupons'));
-    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', 'coupons'); }
 };
 
@@ -286,23 +321,38 @@ export const saveCoupon = async (id: string | null, data: any) => {
     );
     if (id) {
       await setDoc(doc(db, 'coupons', id), cleanData, { merge: true });
-      return id;
     } else {
       const res = await addDoc(collection(db, 'coupons'), cleanData);
-      return res.id;
+      id = res.id;
     }
+    localStorage.removeItem('sorella_coupons');
+    localStorage.removeItem('sorella_coupons_time');
+    return id;
   } catch (err) { handleFirestoreError(err, 'save', 'coupons'); }
 };
 
 export const deleteCoupon = async (id: string) => {
-  try { await deleteDoc(doc(db, 'coupons', id)); }
+  try { 
+    await deleteDoc(doc(db, 'coupons', id));
+    localStorage.removeItem('sorella_coupons');
+    localStorage.removeItem('sorella_coupons_time');
+  }
   catch (err) { handleFirestoreError(err, 'delete', `coupons/${id}`); }
 };
 
 export const getFilters = async () => {
+  const cacheKey = 'sorella_filters';
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const snap = await getDocs(collection(db, 'filters'));
-    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', 'filters'); }
 };
 
@@ -313,59 +363,83 @@ export const saveFilter = async (id: string | null, data: any) => {
     );
     if (id) {
       await setDoc(doc(db, 'filters', id), cleanData, { merge: true });
-      return id;
     } else {
       const res = await addDoc(collection(db, 'filters'), cleanData);
-      return res.id;
+      id = res.id;
     }
+    localStorage.removeItem('sorella_filters');
+    localStorage.removeItem('sorella_filters_time');
+    return id;
   } catch (err) { handleFirestoreError(err, 'save', 'filters'); }
 };
 
 export const deleteFilter = async (id: string) => {
-  try { await deleteDoc(doc(db, 'filters', id)); }
+  try { 
+    await deleteDoc(doc(db, 'filters', id));
+    localStorage.removeItem('sorella_filters');
+    localStorage.removeItem('sorella_filters_time');
+  }
   catch (err) { handleFirestoreError(err, 'delete', `filters/${id}`); }
 };
 
 export const getCategories = async () => {
+  const cacheKey = 'sorella_categories';
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const snap = await getDocs(query(collection(db, 'categories'), orderBy('name', 'asc')));
-    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', 'categories'); }
 };
 
 export const saveCategory = async (id: string | null, data: any) => {
-  console.log('firebase.ts: saveCategory called with:', { id, data });
   try {
-    // Remove undefined values and id from data
     const cleanData = Object.fromEntries(
       Object.entries(data).filter(([key, value]) => value !== undefined && key !== 'id')
     );
     
     if (id) {
-      console.log('firebase.ts: Updating category', id);
       await setDoc(doc(db, 'categories', id), cleanData, { merge: true });
-      return id;
     } else {
-      console.log('firebase.ts: Adding new category');
       const res = await addDoc(collection(db, 'categories'), cleanData);
-      console.log('firebase.ts: New category added with ID:', res.id);
-      return res.id;
+      id = res.id;
     }
+    localStorage.removeItem('sorella_categories');
+    localStorage.removeItem('sorella_categories_time');
+    return id;
   } catch (err) { 
-    console.error('firebase.ts: Error in saveCategory:', err);
     handleFirestoreError(err, 'save', 'categories'); 
   }
 };
 
 export const deleteCategory = async (id: string) => {
-  try { await deleteDoc(doc(db, 'categories', id)); }
+  try { 
+    await deleteDoc(doc(db, 'categories', id));
+    localStorage.removeItem('sorella_categories');
+    localStorage.removeItem('sorella_categories_time');
+  }
   catch (err) { handleFirestoreError(err, 'delete', `categories/${id}`); }
 };
 
 export const getBanners = async () => {
+  const cacheKey = 'sorella_banners';
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const snap = await getDocs(query(collection(db, 'banners'), orderBy('order_index', 'asc')));
-    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', 'banners'); }
 };
 
@@ -376,23 +450,38 @@ export const saveBanner = async (id: string | null, data: any) => {
     );
     if (id) {
       await setDoc(doc(db, 'banners', id), cleanData, { merge: true });
-      return id;
     } else {
       const res = await addDoc(collection(db, 'banners'), cleanData);
-      return res.id;
+      id = res.id;
     }
+    localStorage.removeItem('sorella_banners');
+    localStorage.removeItem('sorella_banners_time');
+    return id;
   } catch (err) { handleFirestoreError(err, 'save', 'banners'); }
 };
 
 export const deleteBanner = async (id: string) => {
-  try { await deleteDoc(doc(db, 'banners', id)); }
+  try { 
+    await deleteDoc(doc(db, 'banners', id));
+    localStorage.removeItem('sorella_banners');
+    localStorage.removeItem('sorella_banners_time');
+  }
   catch (err) { handleFirestoreError(err, 'delete', `banners/${id}`); }
 };
 
 export const getSettings = async () => {
+  const cacheKey = 'sorella_settings';
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const snap = await getDocs(collection(db, 'settings'));
-    return snap.docs.reduce((acc, doc) => ({ ...acc, [doc.id]: doc.data().value }), {});
+    const data = snap.docs.reduce((acc, doc) => ({ ...acc, [doc.id]: doc.data().value }), {});
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', 'settings'); }
 };
 
@@ -546,10 +635,19 @@ export const addReview = async (reviewData: any) => {
 
 // Wishlist
 export const getWishlist = async (userId: string) => {
+  const cacheKey = `sorella_wishlist_${userId}`;
+  const cached = localStorage.getItem(cacheKey);
+  const cacheTime = localStorage.getItem(`${cacheKey}_time`);
+  if (cached && cacheTime && Date.now() - parseInt(cacheTime) < 5 * 60 * 1000) {
+    return JSON.parse(cached);
+  }
   try {
     const q = query(collection(db, 'wishlists'), where('userId', '==', userId));
     const snap = await getDocs(q);
-    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    const data = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    localStorage.setItem(cacheKey, JSON.stringify(data));
+    localStorage.setItem(`${cacheKey}_time`, Date.now().toString());
+    return data;
   } catch (err) { handleFirestoreError(err, 'get', `wishlists?userId=${userId}`); }
 };
 
@@ -560,6 +658,8 @@ export const addToWishlist = async (userId: string, productId: string) => {
       productId,
       createdAt: serverTimestamp()
     });
+    localStorage.removeItem(`sorella_wishlist_${userId}`);
+    localStorage.removeItem(`sorella_wishlist_${userId}_time`);
     return res.id;
   } catch (err) { handleFirestoreError(err, 'save', 'wishlists'); }
 };
@@ -571,5 +671,7 @@ export const removeFromWishlist = async (userId: string, productId: string) => {
     for (const doc of snap.docs) {
       await deleteDoc(doc.ref);
     }
+    localStorage.removeItem(`sorella_wishlist_${userId}`);
+    localStorage.removeItem(`sorella_wishlist_${userId}_time`);
   } catch (err) { handleFirestoreError(err, 'delete', `wishlists?userId=${userId}&productId=${productId}`); }
 };
