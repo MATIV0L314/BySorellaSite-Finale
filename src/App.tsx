@@ -1,7 +1,7 @@
 import React, { useState, useEffect, FormEvent, useMemo } from 'react';
 import { Routes, Route, Link, useNavigate, useLocation, useParams } from 'react-router-dom';
 import { motion, AnimatePresence, useAnimation } from 'framer-motion';
-import { ShoppingBag, Menu, X, Settings as SettingsIcon, MessageSquare, Send, Plus, Trash2, Edit, Save, Wand2, ArrowRight, Phone, Image as ImageIcon, Layout, List, Sun, Moon, Globe, Clock, LogIn, LogOut, User as UserIcon, ImagePlus, Zap, Camera, CameraOff, ChevronDown, Package, UserCircle, DollarSign, LayoutGrid, Instagram, Facebook, Calendar, Maximize, Palette, Check, Users, Search, Upload, Download, Paperclip, FileText, Mail, Tag, Filter as FilterIcon, Heart, Printer, Eye } from 'lucide-react';
+import { ShoppingBag, Menu, X, Settings as SettingsIcon, MessageSquare, Send, Plus, Trash2, Edit, Save, Wand2, ArrowRight, Phone, Image as ImageIcon, Layout, List, Sun, Moon, Globe, Clock, LogIn, LogOut, User as UserIcon, ImagePlus, Zap, Camera, CameraOff, ChevronDown, Package, UserCircle, DollarSign, LayoutGrid, Instagram, Facebook, Calendar, Maximize, Palette, Check, Users, Search, Upload, Download, Paperclip, FileText, Mail, Tag, Filter as FilterIcon, Heart, Printer, Eye, Copy } from 'lucide-react';
 import * as Icons from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
@@ -10,7 +10,7 @@ import AppCursor from './CustomCursor';
 import { translations, Language } from './translations';
 import { auth, signInWithGoogle, logout, db, saveUserProfile, createOrder, deleteOrder, createBuyerUser, getUserProfile, loginWithEmail, registerWithEmail, getProducts, saveProduct, deleteProduct, getCategories, saveCategory, deleteCategory, getBanners, saveBanner, deleteBanner, getSettings, saveSettings, updateOrderStatus, getUsers, updateUserRole, requestAdminAccess, getAdminRequests, updateAdminRequestStatus, getAdminRequestByEmail, getCoupons, saveCoupon, deleteCoupon, getFilters, saveFilter, deleteFilter, getReviews, addReview, getWishlist, addToWishlist, removeFromWishlist, cleanFirestoreData } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, query, orderBy, onSnapshot, where } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, where, getDocs } from 'firebase/firestore';
 import { initMercadoPago, Wallet, Payment } from '@mercadopago/sdk-react';
 
 // Types
@@ -1622,6 +1622,7 @@ const SalesManagement = ({
   const [previewTitle, setPreviewTitle] = useState<string>('');
 
   const storePhone = settings?.whatsapp_number || '+54 9 11 3509 2612';
+  const storeEmail = settings?.store_email || 'dgmvolpi@gmail.com';
   const cleanStorePhone = storePhone.replace(/[^0-9]/g, '');
 
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1947,6 +1948,9 @@ const SalesManagement = ({
         let opts = [];
         if (i.selectedSize) opts.push(`Talle: ${i.selectedSize}`);
         if (i.selectedColor) opts.push(`Color: ${i.selectedColor}`);
+        if (i.selectedDynamicFilters) {
+          Object.entries(i.selectedDynamicFilters).forEach(([k, v]) => opts.push(`${k}: ${v}`));
+        }
         const optsStr = opts.length ? ` (${opts.join(', ')})` : '';
         return `• ${i.name}${optsStr} x${i.quantity}`;
       }).join('\n');
@@ -1962,13 +1966,37 @@ const SalesManagement = ({
              `*Total:* $${Number(order.total || 0).toLocaleString()}\n\n` +
              `Por favor confirmar la recepción del paquete. ¡Muchas gracias por tu compra en Sorella!`;
     } else {
-      const itemsSummary = order.items.map(i => `${i.name} (x${i.quantity})`).join(', ');
-      text = `Hola ${order.customer_name}! Te escribimos de *Sorella Indumentaria* sobre tu pedido *#${order.order_number}*.\n\n` +
-             `Estado: *${order.status}*\n` +
-             `Total: *$${Number(order.total || 0).toLocaleString()}*\n` +
-             `Productos: ${itemsSummary}\n` +
-             (order.shipping_method === 'Envio a domicilio' ? `Dirección de envío: ${order.shipping_address}\n` : 'Modalidad: Retiro en local\n') +
-             `\n¿Tienes alguna consulta o deseas coordinar la entrega? Estamos a tu disposición.`;
+      const itemsText = order.items.map(i => {
+        let opts = [];
+        if (i.selectedSize) opts.push(`Talle: ${i.selectedSize}`);
+        if (i.selectedColor) opts.push(`Color: ${i.selectedColor}`);
+        if (i.selectedDynamicFilters) {
+          Object.entries(i.selectedDynamicFilters).forEach(([k, v]) => opts.push(`${k}: ${v}`));
+        }
+        const optsStr = opts.length ? ` (${opts.join(', ')})` : '';
+        return `• *${i.name}*${optsStr} x${i.quantity} ($${(Number(i.price || 0) * Number(i.quantity || 1)).toLocaleString()})`;
+      }).join('\n');
+
+      text = `✨ *SORELLA INDUMENTARIA - GESTIÓN DE PEDIDO* ✨\n` +
+             `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+             `¡Hola *${order.customer_name}*! Te damos una cálida bienvenida a *Sorella Indumentaria*.\n\n` +
+             `Te contactamos para dar inicio formal a la gestión y preparación de tu pedido *#${order.order_number}*.\n\n` +
+             `📋 *RESUMEN DE TU COMPRA:*\n` +
+             `• *Número de Pedido:* #${order.order_number}\n` +
+             `• *Estado del Pago:* ${order.status || 'Pagado'}\n` +
+             (order.payment_id ? `• *Comprobante Mercado Pago:* ${order.payment_id}\n` : '') +
+             `• *Total Abonado:* $${Number(order.total || 0).toLocaleString()}\n\n` +
+             `🛍️ *PRODUCTOS SELECCIONADOS:*\n${itemsText}\n\n` +
+             `📦 *DATOS DE ENTREGA REGISTRADOS:*\n` +
+             `• *Modalidad:* ${order.shipping_method}\n` +
+             `• *Dirección:* ${order.shipping_address || 'Retiro en sucursal'}\n` +
+             (order.receiver_dni ? `• *Receptor:* ${order.receiver_first_name || ''} ${order.receiver_last_name || ''} (DNI: ${order.receiver_dni})\n` : '') +
+             `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+             `👉 *Por favor responde a este mensaje para terminar de confirmar los datos de tu pedido y coordinar el despacho/entrega a la brevedad.*\n\n` +
+             `Si precisas realizar alguna aclaración o modificación, avísanos directamente por este medio.\n\n` +
+             `¡Muchas gracias por elegirnos!\n` +
+             `*Atención al Cliente - Sorella Indumentaria*\n` +
+             `WhatsApp: ${storePhone} | Email: ${storeEmail}`;
     }
 
     const url = cleanPhone 
@@ -1987,6 +2015,9 @@ const SalesManagement = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           order_number: order.order_number,
+          order_id: order.id,
+          id: order.id,
+          order_data: order,
           customer_email: order.customer_email,
           type
         })
@@ -1998,7 +2029,7 @@ const SalesManagement = ({
         // Offer mailto fallback
         setEmailFeedback({ 
           type: 'error', 
-          text: data.error || 'No se pudo enviar por SMTP. Puedes abrir tu cliente de correo.' 
+          text: data.error || 'No se pudo enviar por SMTP. Puedes abrir tu cliente de correo para enviarlo directamente.' 
         });
       }
     } catch (err: any) {
@@ -2009,9 +2040,18 @@ const SalesManagement = ({
   };
 
   const handleOpenMailto = (order: Order) => {
-    const subject = encodeURIComponent(`Sorella Indumentaria - Pedido #${order.order_number}`);
+    const itemsList = order.items.map(i => `- ${i.name} x${i.quantity} ($${(Number(i.price || 0) * Number(i.quantity || 1)).toLocaleString()})`).join('\n');
+    const subject = encodeURIComponent(`Sorella Indumentaria - Gestión y Confirmación de Pedido #${order.order_number}`);
     const body = encodeURIComponent(
-      `Hola ${order.customer_name},\n\nTe escribimos de Sorella Indumentaria en relación a tu pedido #${order.order_number}.\n\nEstado: ${order.status}\nTotal: $${order.total}\nMétodo de Envío: ${order.shipping_method}\n\nContacto de la tienda: ${storePhone}\n\nSaludos cordiales,\nSorella Indumentaria`
+      `¡Hola ${order.customer_name}!\n\n` +
+      `Te escribimos de Sorella Indumentaria para dar inicio a la gestión de tu pedido #${order.order_number}.\n\n` +
+      `Estado: ${order.status || 'Pagado'}\n` +
+      `Total: $${Number(order.total || 0).toLocaleString()}\n` +
+      `Método de Entrega: ${order.shipping_method}\n` +
+      `Dirección: ${order.shipping_address || 'Retiro en sucursal'}\n\n` +
+      `Productos:\n${itemsList}\n\n` +
+      `Por favor responde a este correo o a nuestro WhatsApp (${storePhone}) para terminar de confirmar los datos de tu pedido y coordinar el despacho/entrega a la brevedad.\n\n` +
+      `Saludos cordiales,\nEquipo Sorella Indumentaria\nWhatsApp: ${storePhone}`
     );
     window.open(`mailto:${order.customer_email}?subject=${subject}&body=${body}`, '_blank');
   };
@@ -8676,7 +8716,8 @@ const SuccessPage = ({ t, settings }: { t: any, settings?: Settings | null }) =>
   const location = useLocation();
   const [orderId, setOrderId] = useState<string | null>(null);
   const [paymentId, setPaymentId] = useState<string | null>(null);
-  const [isConfirmed, setIsConfirmed] = useState(false);
+  const [orderDetails, setOrderDetails] = useState<any>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -8703,73 +8744,195 @@ const SuccessPage = ({ t, settings }: { t: any, settings?: Settings | null }) =>
       .then(res => res.json())
       .then(data => {
         console.log("[SUCCESS_PAGE] Backend order confirmation response:", data);
-        setIsConfirmed(true);
+        if (data.order) setOrderDetails(data.order);
       })
       .catch(err => {
         console.warn("[SUCCESS_PAGE] Backend confirmation error, updating client SDK:", err);
       });
 
-      // 2. Direct client fallback update via Firebase SDK
+      // 2. Direct client fallback update via Firebase SDK & load order details
       try {
         updateOrderStatus(orderParam, 'Pagado');
-        setIsConfirmed(true);
       } catch (clientErr) {
         console.warn("[SUCCESS_PAGE] Client SDK direct update warning:", clientErr);
       }
+
+      // 3. Load order from Firestore
+      const loadOrder = async () => {
+        try {
+          const q = query(collection(db, 'orders'), where('order_number', '==', orderParam.trim()));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            setOrderDetails(snap.docs[0].data());
+          }
+        } catch (e) {
+          console.warn("[SUCCESS_PAGE] Error fetching order from Firestore:", e);
+        }
+      };
+      loadOrder();
     }
   }, [location.search]);
 
   const storePhone = settings?.whatsapp_number || '+54 9 11 3509 2612';
   const cleanPhone = storePhone.replace(/[^0-9]/g, '');
-  const whatsappUrl = settings?.whatsapp_link || `https://wa.me/${cleanPhone}?text=${encodeURIComponent(`¡Hola Sorella! Acabo de realizar el pago de mi pedido ${orderId ? `#${orderId}` : ''}. Quería coordinar la entrega.`)}`;
+  const storeEmail = settings?.smtp_user || 'info@sorella.com';
+
+  const itemsList = orderDetails?.items?.map((i: any) => {
+    let opts = [];
+    if (i.selectedSize) opts.push(`Talle: ${i.selectedSize}`);
+    if (i.selectedColor) opts.push(`Color: ${i.selectedColor}`);
+    if (i.selectedDynamicFilters) {
+      Object.entries(i.selectedDynamicFilters).forEach(([k, v]) => opts.push(`${k}: ${v}`));
+    }
+    const optsStr = opts.length ? ` (${opts.join(', ')})` : '';
+    return `• *${i.name}*${optsStr} x${i.quantity} ($${(Number(i.price || 0) * Number(i.quantity || 1)).toLocaleString()})`;
+  }).join('\n') || '';
+
+  const whatsappMessage = `✨ *SORELLA INDUMENTARIA - CONFIRMACIÓN DE PEDIDO* ✨\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `¡Hola! Mi nombre es *${orderDetails?.customer_name || 'Cliente'}*. Acabo de realizar el pago de mi pedido *#${orderId || ''}*.\n\n` +
+    `📋 *DETALLE DE MI PEDIDO:*\n` +
+    `• *Número de Pedido:* #${orderId || ''}\n` +
+    `• *Estado del Pago:* PAGADO\n` +
+    (paymentId ? `• *Comprobante Mercado Pago:* ${paymentId}\n` : '') +
+    (orderDetails?.total ? `• *Total Abonado:* $${Number(orderDetails.total).toLocaleString()}\n\n` : '\n') +
+    (itemsList ? `🛍️ *PRODUCTOS:*\n${itemsList}\n\n` : '') +
+    `📦 *DATOS DE ENTREGA:*\n` +
+    `• *Modalidad:* ${orderDetails?.shipping_method || 'A coordinar'}\n` +
+    (orderDetails?.shipping_address ? `• *Dirección:* ${orderDetails.shipping_address}\n` : '') +
+    (orderDetails?.receiver_dni ? `• *Receptor:* ${orderDetails.receiver_first_name || ''} ${orderDetails.receiver_last_name || ''} (DNI: ${orderDetails.receiver_dni})\n` : '') +
+    `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+    `👉 *Respondo a este mensaje para terminar de confirmar mi pedido y coordinar el despacho/entrega a la brevedad.*\n\n` +
+    `¡Quedo a la espera de su respuesta para iniciar la gestión!`;
+
+  const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(whatsappMessage)}`;
+
+  const handleCopyMessage = () => {
+    navigator.clipboard.writeText(whatsappMessage);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  };
 
   return (
-    <div className="pt-32 pb-20 px-6 text-center max-w-2xl mx-auto">
-      <div className="w-20 h-20 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-xl shadow-green-500/10">
-        <Check size={44} strokeWidth={3} />
-      </div>
-      
-      <h1 className="text-4xl font-bold mb-3 tracking-tighter text-[var(--text-primary)]">
-        {t.checkout.successTitle || "¡Pago Confirmado con Éxito!"}
-      </h1>
-      
-      {orderId && (
-        <div className="inline-flex items-center gap-2 bg-green-500/10 text-green-600 px-4 py-1.5 rounded-full text-sm font-bold mb-4 border border-green-500/20">
-          <span>Pedido #{orderId}</span>
-          <span className="bg-green-600 text-white text-[10px] px-2 py-0.5 rounded-full">PAGADO</span>
+    <div className="pt-28 pb-20 px-4 md:px-6 max-w-3xl mx-auto">
+      <div className="text-center mb-8">
+        <div className="w-20 h-20 bg-green-500/10 text-green-500 rounded-full flex items-center justify-center mx-auto mb-5 shadow-xl shadow-green-500/10 animate-bounce">
+          <Check size={44} strokeWidth={3} />
         </div>
-      )}
+        
+        <h1 className="text-3xl md:text-4xl font-extrabold mb-2 tracking-tight text-[var(--text-primary)]">
+          {t.checkout.successTitle || "¡Pago Confirmado con Éxito!"}
+        </h1>
 
-      <p className="text-[var(--text-secondary)] mb-8 text-base leading-relaxed">
-        {t.checkout.successMessage || "Hemos recibido tu pago por Mercado Pago y tu pedido ya está siendo preparado en nuestro taller. Te enviamos los detalles a tu casilla de correo."}
-      </p>
-
-      {/* Prominent Store Contact Box */}
-      <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-3xl p-6 mb-8 text-left shadow-sm">
-        <h3 className="font-bold text-sm uppercase text-[var(--text-secondary)] mb-2 flex items-center gap-2">
-          <Phone size={16} className="text-green-600" /> Coordinación y Contacto Directo
-        </h3>
-        <p className="text-sm text-[var(--text-primary)] mb-4">
-          Nos pondremos en contacto contigo a la brevedad para coordinar el envío o entrega. Si prefieres avisarnos de inmediato, escríbenos directamente por WhatsApp:
+        {orderId && (
+          <div className="inline-flex items-center gap-2 bg-green-500/10 text-green-700 dark:text-green-400 px-4 py-1.5 rounded-full text-sm font-bold border border-green-500/30 shadow-sm">
+            <span>Pedido #{orderId}</span>
+            <span className="bg-green-600 text-white text-[10px] px-2 py-0.5 rounded-full font-black">PAGADO</span>
+          </div>
+        )}
+        
+        <p className="text-sm md:text-base text-[var(--text-secondary)] mt-3 max-w-xl mx-auto">
+          Recibimos tu pago por Mercado Pago y tu pedido ya está registrado en nuestro sistema. Te enviamos la confirmación por correo electrónico.
         </p>
-        <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+      </div>
+
+      {/* Prominent WhatsApp First-Contact Call To Action */}
+      <div className="bg-gradient-to-br from-amber-500/10 via-orange-500/5 to-transparent border-2 border-orange-500/30 rounded-3xl p-6 md:p-8 mb-8 shadow-xl">
+        <div className="flex items-center gap-2 mb-3">
+          <span className="bg-orange-500 text-white text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-full shadow-sm">
+            Paso 1 Fundamental
+          </span>
+          <span className="text-xs font-bold text-orange-600 dark:text-orange-400">
+            Coordinación de Entrega
+          </span>
+        </div>
+
+        <h3 className="text-xl md:text-2xl font-bold text-[var(--text-primary)] mb-2">
+          ¿Cómo coordinamos la entrega de tu pedido?
+        </h3>
+        
+        <p className="text-sm text-[var(--text-secondary)] mb-6 leading-relaxed">
+          Para que nuestro equipo comience <strong>de inmediato con la preparación, embalaje y despacho</strong>, responde a nuestro WhatsApp oficial confirmando tus datos:
+        </p>
+
+        <div className="flex flex-col sm:flex-row gap-3">
           <a 
             href={whatsappUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex-1 bg-[#25D366] hover:bg-[#20ba59] text-white py-3 px-5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-green-600/20 transition-all"
+            className="flex-1 bg-[#25D366] hover:bg-[#20ba59] text-white py-4 px-6 rounded-2xl font-extrabold text-sm md:text-base flex items-center justify-center gap-2.5 shadow-lg shadow-green-600/30 hover:scale-[1.02] active:scale-[0.99] transition-all text-center"
           >
-            <MessageSquare size={18} /> Escribirnos por WhatsApp ({storePhone})
+            <MessageSquare size={20} /> Responder por WhatsApp para Confirmar Pedido
           </a>
+          <button 
+            onClick={handleCopyMessage}
+            className="px-5 py-3.5 bg-[var(--bg-secondary)] hover:bg-[var(--bg-primary)] border border-[var(--border-color)] text-[var(--text-primary)] rounded-2xl font-bold text-xs flex items-center justify-center gap-2 transition-all"
+            title="Copiar texto del mensaje"
+          >
+            <Copy size={16} /> {copied ? '¡Copiado!' : 'Copiar Mensaje'}
+          </button>
+        </div>
+
+        <div className="mt-4 pt-4 border-t border-orange-500/20 flex flex-wrap items-center justify-between text-xs text-[var(--text-secondary)] gap-2">
+          <span>📞 WhatsApp Oficial: <strong className="text-green-600 font-mono">{storePhone}</strong></span>
+          <span>✉️ Correo: {storeEmail}</span>
         </div>
       </div>
 
-      <button 
-        onClick={() => navigate('/')}
-        className="bg-brand-peach text-white px-10 py-3.5 rounded-full font-bold shadow-lg shadow-brand-peach/20 hover:scale-105 transition-transform text-sm"
-      >
-        {t.checkout.backToCatalog}
-      </button>
+      {/* Order Summary Card */}
+      {orderDetails && (
+        <div className="bg-[var(--bg-secondary)] border border-[var(--border-color)] rounded-3xl p-6 mb-8 text-left shadow-sm">
+          <h3 className="font-bold text-sm uppercase text-[var(--text-secondary)] mb-4 flex items-center gap-2">
+            <Package size={16} className="text-brand-peach" /> Resumen de la Orden Registrada
+          </h3>
+
+          <div className="space-y-3 mb-4 pb-4 border-b border-[var(--border-color)]">
+            {orderDetails.items?.map((item: any, idx: number) => (
+              <div key={idx} className="flex justify-between items-start text-sm">
+                <div>
+                  <span className="font-bold text-[var(--text-primary)]">{item.name}</span>
+                  <span className="text-brand-peach font-bold ml-2">x{item.quantity}</span>
+                  <div className="text-xs text-[var(--text-secondary)]">
+                    {item.selectedSize && `Talle: ${item.selectedSize} `}
+                    {item.selectedColor && `Color: ${item.selectedColor}`}
+                  </div>
+                </div>
+                <span className="font-bold text-[var(--text-primary)]">
+                  ${(Number(item.price || 0) * Number(item.quantity || 1)).toLocaleString()}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-between items-center font-bold text-base text-[var(--text-primary)] mb-4">
+            <span>Total Abonado</span>
+            <span className="text-brand-peach text-xl">${Number(orderDetails.total || 0).toLocaleString()}</span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-[var(--text-secondary)] bg-[var(--bg-primary)] p-4 rounded-2xl border border-[var(--border-color)]">
+            <div>
+              <p className="font-bold text-[var(--text-primary)] uppercase text-[10px]">Método de Envío:</p>
+              <p className="mt-0.5">{orderDetails.shipping_method}</p>
+              {orderDetails.shipping_address && <p className="mt-0.5">📍 {orderDetails.shipping_address}</p>}
+            </div>
+            <div>
+              <p className="font-bold text-[var(--text-primary)] uppercase text-[10px]">Datos de Contacto:</p>
+              <p className="mt-0.5">👤 {orderDetails.customer_name}</p>
+              <p className="mt-0.5">📞 {orderDetails.customer_phone}</p>
+              <p className="mt-0.5">📧 {orderDetails.customer_email}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="text-center">
+        <button 
+          onClick={() => navigate('/')}
+          className="bg-brand-peach text-white px-10 py-3.5 rounded-full font-bold shadow-lg shadow-brand-peach/20 hover:scale-105 transition-transform text-sm"
+        >
+          {t.checkout.backToCatalog}
+        </button>
+      </div>
     </div>
   );
 };

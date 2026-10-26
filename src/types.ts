@@ -77,6 +77,7 @@ export interface Coupon {
 export interface Settings {
   whatsapp_number: string;
   whatsapp_link?: string;
+  store_email?: string;
   admin_password: string;
   featured_category?: string;
   featured_layout?: string;

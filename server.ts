@@ -161,14 +161,17 @@ async function getServerSettings(forceRefresh = false) {
 async function findOrderByNumber(orderIdentifier: string): Promise<{ id: string; data: any; ref?: any } | null> {
   if (!orderIdentifier) return null;
   const cleanId = String(orderIdentifier).trim();
+  const rawId = cleanId.replace(/^#/, '');
 
   if (clientDb) {
     try {
-      // 1. Try finding by order_number field
-      const q = clientQuery(clientCollection(clientDb, 'orders'), clientWhere('order_number', '==', cleanId));
-      const snap = await getClientDocs(q);
-      if (!snap.empty) {
-        return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+      // 1. Try finding by order_number field with variations
+      for (const val of [cleanId, rawId, `#${rawId}`]) {
+        const q = clientQuery(clientCollection(clientDb, 'orders'), clientWhere('order_number', '==', val));
+        const snap = await getClientDocs(q);
+        if (!snap.empty) {
+          return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+        }
       }
 
       // 2. Try finding directly by doc ID
@@ -184,9 +187,11 @@ async function findOrderByNumber(orderIdentifier: string): Promise<{ id: string;
 
   if (db) {
     try {
-      const snap = await db.collection('orders').where('order_number', '==', cleanId).get();
-      if (!snap.empty) {
-        return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+      for (const val of [cleanId, rawId, `#${rawId}`]) {
+        const snap = await db.collection('orders').where('order_number', '==', val).get();
+        if (!snap.empty) {
+          return { id: snap.docs[0].id, data: snap.docs[0].data(), ref: snap.docs[0].ref };
+        }
       }
       const directDoc = await db.collection('orders').doc(cleanId).get();
       if (directDoc.exists) {
@@ -638,22 +643,17 @@ app.post("/api/notify-order", async (req, res) => {
       return `- ${item.name}${optionsStr} x ${item.quantity} ($${item.price * item.quantity})`;
     }).join('\n');
 
-    const customerHtml = `
-      <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto;">
-        <h1 style="color: #F27D26;">¡Gracias por tu compra, ${customer_name}!</h1>
-        <p>Tu pedido <strong>#${order_number}</strong> ha sido recibido correctamente.</p>
-        <p>Estado actual: <strong>Pendiente de pago</strong></p>
-        <div style="background: #f9f9f9; padding: 20px; rounded: 10px;">
-          <h3>Detalles del Pedido:</h3>
-          <ul>${itemsHtml}</ul>
-          <p><strong>Total: $${total}</strong></p>
-        </div>
-        <p>Método de envío: ${shipping_method}</p>
-        ${shipping_method === 'Envio a domicilio' ? `<p>Dirección: ${shipping_address}</p>` : '<p>Retiro por local.</p>'}
-        <p>Te avisaremos cuando el estado de tu pago cambie. Si tienes alguna duda, puedes contactarnos directamente:</p>
-        ${whatsappButton}
-      </div>
-    `;
+    const customerHtml = buildCustomerOrderEmail({
+      order_number,
+      customer_name,
+      customer_email,
+      customer_phone,
+      shipping_address,
+      shipping_method,
+      total,
+      items,
+      status: 'Pendiente de pago'
+    }, undefined, config);
     
     const adminHtml = `
       <div style="font-family: sans-serif; color: #333;">
@@ -671,7 +671,7 @@ app.post("/api/notify-order", async (req, res) => {
 
     const whatsappMessage = `🛍️ *NUEVA ORDEN #${order_number}*\n\n👤 *Cliente:* ${customer_name}\n📧 *Email:* ${customer_email}\n📞 *Tel:* ${customer_phone}\n\n📦 *Productos:*\n${itemsText}\n\n💰 *Total:* $${total}\n🚚 *Envío:* ${shipping_method}\n📍 *Dirección:* ${shipping_address}`;
 
-    await sendEmail(customer_email, `Sorella - Confirmación de Pedido #${order_number}`, customerHtml);
+    await sendEmail(customer_email, `Sorella Indumentaria - Confirmación de Pedido #${order_number}`, customerHtml);
     await sendEmail(adminEmail, `NUEVA VENTA - Pedido #${order_number}`, adminHtml);
     await sendWhatsApp(adminWhatsApp || '', whatsappMessage);
     
@@ -686,8 +686,10 @@ app.post("/api/notify-order", async (req, res) => {
 function buildCustomerOrderEmail(orderData: any, paymentId?: string, settings?: any) {
   const storePhone = settings?.whatsapp_number || '+54 9 11 3509 2612';
   const cleanPhone = storePhone.replace(/[^0-9]/g, '');
-  const whatsappUrl = settings?.whatsapp_link || `https://wa.me/${cleanPhone}`;
   const storeEmail = settings?.smtp_user || 'info@sorella.com';
+
+  const replyMsg = `¡Hola Sorella Indumentaria! Mi nombre es ${orderData.customer_name || 'Cliente'}. Acabo de realizar el pedido #${orderData.order_number}. Respondo a este mensaje para confirmar mis datos y coordinar el envío/entrega. ¡Muchas gracias!`;
+  const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(replyMsg)}`;
 
   const itemsHtml = (orderData.items || []).map((item: any) => {
     let options = [];
@@ -699,9 +701,12 @@ function buildCustomerOrderEmail(orderData: any, paymentId?: string, settings?: 
     const optionsStr = options.length > 0 ? ` (${options.join(', ')})` : '';
     return `
       <tr style="border-bottom: 1px solid #f1f1f1;">
-        <td style="padding: 12px 8px; font-weight: 500;">${item.name}${optionsStr}</td>
-        <td style="padding: 12px 8px; text-align: center;">x${item.quantity}</td>
-        <td style="padding: 12px 8px; text-align: right; font-weight: bold; color: #111;">$${(Number(item.price || 0) * Number(item.quantity || 1)).toLocaleString()}</td>
+        <td style="padding: 14px 10px; font-weight: 600; color: #1e293b;">
+          ${item.name}
+          ${optionsStr ? `<br/><span style="font-size: 12px; color: #64748b; font-weight: normal;">${optionsStr}</span>` : ''}
+        </td>
+        <td style="padding: 14px 10px; text-align: center; color: #475569; font-weight: bold;">x${item.quantity}</td>
+        <td style="padding: 14px 10px; text-align: right; font-weight: 700; color: #0f172a;">$${(Number(item.price || 0) * Number(item.quantity || 1)).toLocaleString()}</td>
       </tr>
     `;
   }).join('');
@@ -709,28 +714,51 @@ function buildCustomerOrderEmail(orderData: any, paymentId?: string, settings?: 
   return `
     <!DOCTYPE html>
     <html lang="es">
-    <head><meta charset="UTF-8"><title>Confirmación de Pedido</title></head>
+    <head><meta charset="UTF-8"><title>Confirmación de Pedido - Sorella Indumentaria</title></head>
     <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #faf6f0; margin: 0; padding: 24px; color: #2d2d2d;">
-      <div style="max-width: 620px; margin: 0 auto; background: #ffffff; border-radius: 20px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.06); border: 1px solid #f0e6dc;">
-        <div style="background-color: #242220; padding: 32px 24px; text-align: center;">
-          <h1 style="color: #F8D9C8; margin: 0; font-size: 26px; letter-spacing: 1px; font-weight: 800;">SORELLA INDUMENTARIA</h1>
-          <p style="color: #ffffff; margin: 8px 0 0; font-size: 14px; opacity: 0.9;">¡Pago Confirmado y Acreditado!</p>
+      <div style="max-width: 620px; margin: 0 auto; background: #ffffff; border-radius: 24px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.06); border: 1px solid #f0e6dc;">
+        <div style="background-color: #242220; padding: 34px 24px; text-align: center;">
+          <h1 style="color: #F8D9C8; margin: 0; font-size: 26px; letter-spacing: 2px; font-weight: 800;">SORELLA INDUMENTARIA</h1>
+          <p style="color: #ffffff; margin: 8px 0 0; font-size: 13px; letter-spacing: 0.5px; opacity: 0.9; text-transform: uppercase;">Confirmación Oficial de Compra</p>
         </div>
         
         <div style="padding: 32px 24px;">
-          <h2 style="color: #22C55E; margin-top: 0; font-size: 22px;">¡Gracias por tu compra, ${orderData.customer_name || 'Cliente'}!</h2>
-          <p style="font-size: 15px; line-height: 1.6; color: #555;">Tu pago por Mercado Pago se ha acreditado correctamente y tu pedido ya está siendo preparado en nuestro taller.</p>
+          <h2 style="color: #15803d; margin-top: 0; font-size: 22px;">¡Gracias por tu compra, ${orderData.customer_name || 'Cliente'}!</h2>
+          <p style="font-size: 15px; line-height: 1.6; color: #475569;">
+            Tu compra ha sido registrada con éxito y estamos listos para dar inicio a la preparación de tu paquete.
+          </p>
           
-          <div style="background: #fdfaf6; border: 1px solid #fae3d9; border-radius: 14px; padding: 18px; margin: 20px 0;">
-            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Número de Pedido:</strong> <span style="color: #F27D26; font-weight: bold;">#${orderData.order_number}</span></p>
-            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Estado:</strong> <span style="background: #dcfce7; color: #15803d; padding: 3px 10px; border-radius: 6px; font-weight: bold; font-size: 13px;">PAGADO</span></p>
-            ${paymentId ? `<p style="margin: 0; font-size: 13px; color: #777;">ID de Pago Mercado Pago: <strong>${paymentId}</strong></p>` : ''}
+          <div style="background: #fdfaf6; border: 1px solid #fae3d9; border-radius: 16px; padding: 18px; margin: 20px 0;">
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Número de Pedido:</strong> <span style="color: #ea580c; font-weight: 800; font-size: 15px;">#${orderData.order_number}</span></p>
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Estado:</strong> <span style="background: #dcfce7; color: #15803d; padding: 4px 12px; border-radius: 8px; font-weight: 800; font-size: 12px; text-transform: uppercase;">${(orderData.status || 'PAGADO').toUpperCase()}</span></p>
+            ${paymentId ? `<p style="margin: 0; font-size: 13px; color: #64748b;">ID de Pago Mercado Pago: <strong>${paymentId}</strong></p>` : ''}
           </div>
 
-          <h3 style="font-size: 16px; margin: 24px 0 12px; border-bottom: 2px solid #F8D9C8; padding-bottom: 8px; color: #242220;">Detalle de Productos</h3>
+          <!-- Highlighted First Contact Step via WhatsApp -->
+          <div style="margin: 26px 0; padding: 22px; background: #FFF7ED; border: 2px solid #FDBA74; border-radius: 18px; text-align: center;">
+            <span style="background: #EA580C; color: #FFFFFF; font-size: 11px; font-weight: 800; padding: 4px 14px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.5px; display: inline-block; margin-bottom: 12px;">
+              Paso Fundamental para el Envío
+            </span>
+            <h3 style="margin: 0 0 10px; color: #9A3412; font-size: 18px; font-weight: 800;">
+              ¿Cómo coordinamos la entrega de tu pedido?
+            </h3>
+            <p style="margin: 0 0 16px; font-size: 14px; color: #7C2D12; line-height: 1.6;">
+              Para que nuestro equipo comience de inmediato con el embalaje y la coordinación del despacho o retiro, <strong>por favor responde a nuestro WhatsApp oficial confirmando tus datos</strong> haciendo clic en el siguiente botón:
+            </p>
+            <div style="margin-bottom: 16px;">
+              <a href="${whatsappUrl}" style="display: inline-block; padding: 15px 30px; background-color: #25D366; color: #ffffff; text-decoration: none; border-radius: 50px; font-weight: 800; font-size: 15px; box-shadow: 0 6px 18px rgba(37,211,102,0.35);">
+                💬 Responder por WhatsApp para Coordinar Envío
+              </a>
+            </div>
+            <div style="background: #ffffff; padding: 10px 16px; border-radius: 12px; display: inline-block; border: 1px solid #fed7aa; font-size: 13px; color: #334155;">
+              📞 WhatsApp de Atención: <strong style="color: #15803d;">${storePhone}</strong> &nbsp;|&nbsp; ✉️ ${storeEmail}
+            </div>
+          </div>
+
+          <h3 style="font-size: 16px; margin: 26px 0 12px; border-bottom: 2px solid #F8D9C8; padding-bottom: 8px; color: #242220; text-transform: uppercase; letter-spacing: 0.5px;">Detalle de Productos</h3>
           <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
             <thead>
-              <tr style="background: #f8f8f8; text-align: left; font-size: 12px; color: #777; text-transform: uppercase;">
+              <tr style="background: #f8fafc; text-align: left; font-size: 12px; color: #64748b; text-transform: uppercase;">
                 <th style="padding: 10px 8px;">Producto</th>
                 <th style="padding: 10px 8px; text-align: center;">Cant.</th>
                 <th style="padding: 10px 8px; text-align: right;">Subtotal</th>
@@ -742,39 +770,18 @@ function buildCustomerOrderEmail(orderData: any, paymentId?: string, settings?: 
             <tfoot>
               <tr>
                 <td colspan="2" style="padding: 16px 8px 8px; text-align: right; font-weight: bold; font-size: 16px; color: #333;">Total Abonado:</td>
-                <td style="padding: 16px 8px 8px; text-align: right; font-weight: 800; font-size: 20px; color: #F27D26;">$${Number(orderData.total || 0).toLocaleString()}</td>
+                <td style="padding: 16px 8px 8px; text-align: right; font-weight: 800; font-size: 20px; color: #ea580c;">$${Number(orderData.total || 0).toLocaleString()}</td>
               </tr>
             </tfoot>
           </table>
 
           <div style="margin-top: 24px; padding: 18px; background: #fdfaf6; border-radius: 14px; border: 1px solid #f2ece6; font-size: 14px; line-height: 1.6;">
             <p style="margin: 0 0 6px;"><strong>Método de Entrega:</strong> ${orderData.shipping_method || 'A convenir'}</p>
-            ${orderData.shipping_method === 'Envio a domicilio' ? `<p style="margin: 0 0 6px;"><strong>Dirección de Envío:</strong> ${orderData.shipping_address || 'No especificada'}</p>` : '<p style="margin: 0 0 6px;"><strong>Modalidad:</strong> Retiro en local / sucursal</p>'}
+            ${orderData.shipping_method === 'Envio a domicilio' ? `<p style="margin: 0 0 6px;"><strong>Dirección de Envío:</strong> ${orderData.shipping_address || 'No especificada'}</p>` : '<p style="margin: 0 0 6px;"><strong>Modalidad:</strong> Retiro en sucursal / taller</p>'}
             ${orderData.receiver_dni ? `<p style="margin: 0;"><strong>Quien retira/recibe:</strong> ${orderData.receiver_first_name || ''} ${orderData.receiver_last_name || ''} (DNI: ${orderData.receiver_dni})</p>` : ''}
           </div>
 
-          <!-- Highlighted Store Contact Information -->
-          <div style="margin-top: 30px; padding: 22px; background: #FFF7ED; border: 2px dashed #FDBA74; border-radius: 16px; text-align: center;">
-            <h4 style="margin: 0 0 8px; color: #C2410C; font-size: 17px; font-weight: bold;">¿Dudas o consultas sobre tu pedido?</h4>
-            <p style="margin: 0 0 14px; font-size: 14px; color: #7C2D12; line-height: 1.5;">
-              Nos contactaremos pronto para coordinar la entrega. También puedes escribirnos o llamarnos directamente:
-            </p>
-            <div style="background: #ffffff; padding: 12px; border-radius: 10px; display: inline-block; margin-bottom: 16px; border: 1px solid #fed7aa;">
-              <p style="margin: 0; font-size: 15px; font-weight: bold; color: #1e293b;">
-                📞 Contacto / WhatsApp: <span style="color: #15803d;">${storePhone}</span>
-              </p>
-              <p style="margin: 4px 0 0; font-size: 13px; color: #64748b;">
-                ✉️ Correo: ${storeEmail}
-              </p>
-            </div>
-            <div>
-              <a href="${whatsappUrl}" style="display: inline-block; padding: 14px 28px; background-color: #25D366; color: #ffffff; text-decoration: none; border-radius: 50px; font-weight: bold; font-size: 15px; box-shadow: 0 4px 12px rgba(37,211,102,0.3);">
-                💬 Contactar a Sorella por WhatsApp
-              </a>
-            </div>
-          </div>
-
-          <p style="font-size: 12px; color: #999; text-align: center; margin-top: 30px; line-height: 1.5;">
+          <p style="font-size: 12px; color: #94a3b8; text-align: center; margin-top: 32px; line-height: 1.5;">
             Guarda este correo como comprobante de tu pedido.<br/>
             © Sorella Indumentaria. Todos los derechos reservados.
           </p>
@@ -919,17 +926,24 @@ app.post("/api/checkout/confirm-order", async (req, res) => {
 // POST to send/resend email directly from Admin Sales panel
 app.post("/api/admin/send-order-email", async (req, res) => {
   try {
-    const { order_number, customer_email, type, custom_message } = req.body;
-    if (!order_number) {
+    const { order_number, customer_email, type, custom_message, id, order_id, order_data } = req.body;
+    const identifier = order_number || order_id || id || order_data?.order_number || order_data?.id;
+    if (!identifier && !order_data) {
       return res.status(400).json({ error: "order_number is required" });
     }
 
-    const order = await findOrderByNumber(order_number);
-    if (!order) {
+    let order = identifier ? await findOrderByNumber(identifier) : null;
+    let orderData = order?.data;
+
+    if (!orderData && order_data && (order_data.order_number || order_data.items)) {
+      console.log("[ADMIN_SEND_ORDER_EMAIL] Using provided order_data fallback for:", order_data.order_number);
+      orderData = order_data;
+    }
+
+    if (!orderData) {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    const orderData = order.data;
     const targetEmail = (customer_email || orderData.customer_email || '').trim();
     if (!targetEmail) {
       return res.status(400).json({ error: "Customer email is missing" });
@@ -960,7 +974,7 @@ app.post("/api/admin/send-order-email", async (req, res) => {
         </div>
       `;
     } else {
-      subject = `Sorella - Detalle y Comprobante de Pedido #${orderData.order_number}`;
+      subject = `Sorella Indumentaria - Confirmación y Gestión de Pedido #${orderData.order_number}`;
       html = buildCustomerOrderEmail(orderData, orderData.payment_id, config);
       if (custom_message) {
         html = html.replace('</h2>', `</h2><div style="background: #fff3cd; padding: 12px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #ffeeba; color: #856404;"><strong>Nota de la tienda:</strong> ${custom_message}</div>`);
@@ -968,6 +982,16 @@ app.post("/api/admin/send-order-email", async (req, res) => {
     }
 
     const emailResult = await sendEmail(targetEmail, subject, html);
+    if (!emailResult.success) {
+      console.warn("[ADMIN_SEND_ORDER_EMAIL] SMTP Error:", emailResult.error);
+      return res.status(500).json({ 
+        success: false, 
+        smtp_failed: true,
+        error: `No se pudo enviar por SMTP: ${emailResult.error || 'Error al conectar con el servidor de correo'}. Puedes usar el botón de abrir cliente de correo para enviarlo directamente.`, 
+        emailResult 
+      });
+    }
+
     res.json({ success: true, emailResult, message: `Correo enviado exitosamente a ${targetEmail}` });
   } catch (err: any) {
     console.error("[ADMIN_SEND_ORDER_EMAIL] Error:", err);

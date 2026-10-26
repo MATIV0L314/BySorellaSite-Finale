@@ -421,13 +421,27 @@ export const getOrders = async () => {
   }
 };
 
-export const updateOrderStatus = async (id: string, status: string) => {
+export const updateOrderStatus = async (idOrNumber: string, status: string) => {
   try {
-    const orderDoc = await getDoc(doc(db, 'orders', id));
-    if (!orderDoc.exists()) throw new Error("Order not found");
-    const orderData = orderDoc.data();
+    let orderDocRef = doc(db, 'orders', idOrNumber);
+    let orderDoc = await getDoc(orderDocRef);
 
-    await updateDoc(doc(db, 'orders', id), { status });
+    if (!orderDoc.exists()) {
+      // Try searching by order_number
+      const cleanNumber = idOrNumber.trim();
+      const q = query(collection(db, 'orders'), where('order_number', '==', cleanNumber));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        orderDocRef = doc(db, 'orders', snap.docs[0].id);
+        orderDoc = snap.docs[0];
+      } else {
+        console.warn(`[FIREBASE] Order not found for ID or order_number: ${idOrNumber}`);
+        return;
+      }
+    }
+
+    const orderData = orderDoc.data();
+    await updateDoc(orderDocRef, { status });
 
     // Notify user and admin
     try {
@@ -444,7 +458,7 @@ export const updateOrderStatus = async (id: string, status: string) => {
       console.error("Failed to send status notification:", notifyErr);
     }
   }
-  catch (err) { handleFirestoreError(err, 'update', `orders/${id}`); }
+  catch (err) { handleFirestoreError(err, 'update', `orders/${idOrNumber}`); }
 };
 
 export const getUsers = async (): Promise<any[]> => {
